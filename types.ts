@@ -55,3 +55,16 @@ export interface FileNode {
   children?: FileNode[];
   hasIssues?: boolean;
 }
+
+export interface GitHubConfig {
+  repoUrl: string;
+  token: string;
+  owner?: string;
+  repo?: string;
+  branch?: string;
+}
+
+export interface PullRequestResult {
+  url: string;
+  number: number;
+}

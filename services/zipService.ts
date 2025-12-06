@@ -48,3 +48,28 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
     return getScore(a) - getScore(b);
   });
 };
+
+export const createAndDownloadZip = async (files: ProjectFile[]) => {
+  const zip = new JSZip();
+
+  files.forEach(file => {
+    // Use refactored code if available, otherwise original content
+    const contentToSave = (file.status === 'completed' && file.result?.refactoredCode) 
+      ? file.result.refactoredCode 
+      : file.content;
+      
+    zip.file(file.path, contentToSave);
+  });
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  
+  // Trigger download
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'code-evolve-migrated.zip';
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+};

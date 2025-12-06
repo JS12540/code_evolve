@@ -1,12 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Header from './components/Header';
 import Editor from './components/Editor';
 import ChangeLog from './components/ChangeLog';
 import FileTree from './components/FileTree';
 import { analyzeCode } from './services/geminiService';
-import { extractZip } from './services/zipService';
-import { MigrationResult, TargetVersion, ProjectFile } from './types';
-import { Play, Upload, AlertCircle, Loader2, FolderOpen, FileCode, BarChart3, Code2 } from 'lucide-react';
+import { extractZip, createAndDownloadZip } from './services/zipService';
+import { fetchRepoContents, createPullRequest, parseRepoUrl } from './services/githubService';
+import { generateMigrationReport } from './services/pdfService';
+import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig } from './types';
+import { 
+  Play, 
+  Upload, 
+  AlertCircle, 
+  Loader2, 
+  FolderOpen, 
+  FileCode, 
+  BarChart3, 
+  Code2, 
+  Github, 
+  Download,
+  FileText,
+  GitPullRequest,
+  Check
+} from 'lucide-react';
 
 const INITIAL_CODE_EXAMPLE = `# Legacy Python Example
 import distutils
@@ -30,6 +46,8 @@ if __name__ == '__main__':
     process_user_data(user_input)
 `;
 
+type SourceMode = 'upload' | 'github';
+
 function App() {
   const [files, setFiles] = useState<ProjectFile[]>([
     {
@@ -44,6 +62,13 @@ function App() {
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   
+  // Modes & Config
+  const [sourceMode, setSourceMode] = useState<SourceMode>('upload');
+  const [githubUrl, setGithubUrl] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [isGithubLoading, setIsGithubLoading] = useState(false);
+  const [prStatus, setPrStatus] = useState<{ url?: string; loading: boolean; error?: string } | null>(null);
+
   // Right panel view state
   const [activeTab, setActiveTab] = useState<'report' | 'code'>('report');
 
@@ -54,7 +79,7 @@ function App() {
     if (!file) return;
 
     setGlobalError(null);
-    setIsProjectAnalyzing(true); // Set loading state immediately
+    setIsProjectAnalyzing(true);
 
     try {
       let extractedFiles: ProjectFile[] = [];
@@ -67,7 +92,6 @@ function App() {
           return;
         }
       } else {
-        // Single file load
         const content = await file.text();
         extractedFiles = [{
           path: file.name,
@@ -79,13 +103,70 @@ function App() {
       
       setFiles(extractedFiles);
       setSelectedFilePath(extractedFiles[0].path);
-
-      // AUTOMATIC ANALYSIS START
       await runBatchAnalysis(extractedFiles);
 
     } catch (err: any) {
       setGlobalError("Failed to load file: " + err.message);
       setIsProjectAnalyzing(false);
+    }
+  };
+
+  const handleGithubImport = async () => {
+    const parsed = parseRepoUrl(githubUrl);
+    if (!parsed) {
+      setGlobalError("Invalid GitHub URL. Format: https://github.com/owner/repo");
+      return;
+    }
+    if (!githubToken) {
+      setGlobalError("Please provide a GitHub Token (Classic) with repo access.");
+      return;
+    }
+
+    setIsGithubLoading(true);
+    setGlobalError(null);
+    try {
+      const config: GitHubConfig = {
+        repoUrl: githubUrl,
+        token: githubToken,
+        owner: parsed.owner,
+        repo: parsed.repo
+      };
+      
+      const fetchedFiles = await fetchRepoContents(config);
+      if (fetchedFiles.length === 0) {
+        setGlobalError("No supported files found in the repository (or rate limited).");
+      } else {
+        setFiles(fetchedFiles);
+        setSelectedFilePath(fetchedFiles[0].path);
+        // Optional: Auto-analyze on import? Let's user trigger it to save tokens, or auto. 
+        // Prompt implies automatic, but let's be safe with API calls. We'll do auto.
+        await runBatchAnalysis(fetchedFiles);
+      }
+    } catch (err: any) {
+      setGlobalError("GitHub Import Failed: " + err.message);
+    } finally {
+      setIsGithubLoading(false);
+    }
+  };
+
+  const handleCreatePR = async () => {
+    const parsed = parseRepoUrl(githubUrl);
+    if (!parsed || !githubToken) {
+      setGlobalError("Missing GitHub Config for PR.");
+      return;
+    }
+
+    setPrStatus({ loading: true });
+    try {
+      const result = await createPullRequest({
+        repoUrl: githubUrl,
+        token: githubToken,
+        owner: parsed.owner,
+        repo: parsed.repo
+      }, files);
+      setPrStatus({ loading: false, url: result.url });
+    } catch (err: any) {
+      setPrStatus({ loading: false, error: err.message });
     }
   };
 
@@ -119,7 +200,7 @@ function App() {
     }
     
     setIsProjectAnalyzing(false);
-    setActiveTab('report'); // Switch to report view when analysis starts/finishes
+    setActiveTab('report');
   };
 
   const handleManualAnalyze = async () => {
@@ -139,32 +220,71 @@ function App() {
     }
   };
 
-  const handleManualProjectAnalyze = () => {
-     runBatchAnalysis(files);
-  };
-
   return (
     <div className="min-h-screen bg-background text-slate-200 font-sans selection:bg-primary/20 flex flex-col h-screen overflow-hidden">
       <Header />
 
       <main className="flex-1 flex overflow-hidden">
         
-        {/* Sidebar: File Explorer */}
-        <aside className="w-64 border-r border-slate-700 bg-surface flex flex-col flex-shrink-0 z-20">
-          <div className="p-4 border-b border-slate-700">
-            <div className="relative group">
-              <input 
-                type="file" 
-                accept=".zip,.py,.txt,.md" 
-                onChange={handleFileUpload} 
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-              />
-              <button className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 group-hover:bg-slate-700 text-slate-300 rounded-lg text-sm border border-slate-600 transition-colors">
-                <Upload className="w-4 h-4" />
-                Upload Project
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-500 mt-2 text-center">Auto-analyzes .zip content</p>
+        {/* Sidebar */}
+        <aside className="w-80 border-r border-slate-700 bg-surface flex flex-col flex-shrink-0 z-20">
+          
+          {/* Source Toggle */}
+          <div className="p-4 border-b border-slate-700 bg-slate-900/30">
+             <div className="flex bg-slate-800 p-1 rounded-lg mb-4">
+                <button 
+                  onClick={() => setSourceMode('upload')}
+                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'upload' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  Upload ZIP
+                </button>
+                <button 
+                  onClick={() => setSourceMode('github')}
+                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'github' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  GitHub Repo
+                </button>
+             </div>
+
+             {sourceMode === 'upload' ? (
+                <div className="relative group">
+                  <input 
+                    type="file" 
+                    accept=".zip,.py,.txt,.md" 
+                    onChange={handleFileUpload} 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  />
+                  <button className="w-full flex items-center justify-center gap-2 px-4 py-8 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-700 hover:border-slate-500 rounded-lg text-sm transition-all group-hover:text-white">
+                    <Upload className="w-5 h-5 mb-1" />
+                    <span className="text-xs">Click to Upload ZIP</span>
+                  </button>
+                </div>
+             ) : (
+                <div className="space-y-2">
+                   <input 
+                      type="text" 
+                      placeholder="https://github.com/owner/repo"
+                      value={githubUrl}
+                      onChange={e => setGithubUrl(e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none"
+                   />
+                   <input 
+                      type="password" 
+                      placeholder="GitHub Personal Access Token"
+                      value={githubToken}
+                      onChange={e => setGithubToken(e.target.value)}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none"
+                   />
+                   <button 
+                      onClick={handleGithubImport}
+                      disabled={isGithubLoading}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
+                   >
+                      {isGithubLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Github className="w-3 h-3" />}
+                      Import & Analyze
+                   </button>
+                </div>
+             )}
           </div>
           
           <div className="flex-1 min-h-0">
@@ -175,15 +295,46 @@ function App() {
             />
           </div>
 
-          <div className="p-4 border-t border-slate-700 bg-slate-900/50">
-             <button
-                onClick={handleManualProjectAnalyze}
-                disabled={isProjectAnalyzing || files.length === 0}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
-             >
-                {isProjectAnalyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-                {isProjectAnalyzing ? 'Scanning...' : 'Re-Analyze All'}
-             </button>
+          {/* Action Footer */}
+          <div className="p-4 border-t border-slate-700 bg-slate-900/50 space-y-2">
+             <div className="grid grid-cols-2 gap-2">
+               <button
+                  onClick={() => createAndDownloadZip(files)}
+                  className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors"
+                  title="Download Code as ZIP"
+               >
+                  <Download className="w-3 h-3" /> ZIP
+               </button>
+               <button
+                  onClick={() => generateMigrationReport(files)}
+                  className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors"
+                  title="Download Report as PDF"
+               >
+                  <FileText className="w-3 h-3" /> PDF
+               </button>
+             </div>
+
+             {sourceMode === 'github' && (
+                <button
+                  onClick={handleCreatePR}
+                  disabled={prStatus?.loading || isProjectAnalyzing}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 border border-purple-500/30 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
+                >
+                   {prStatus?.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <GitPullRequest className="w-3 h-3" />}
+                   Create Pull Request
+                </button>
+             )}
+             
+             {prStatus?.url && (
+                <a href={prStatus.url} target="_blank" rel="noreferrer" className="block text-center text-[10px] text-emerald-400 hover:underline">
+                  PR Created! Click to view.
+                </a>
+             )}
+             {prStatus?.error && (
+                <div className="text-[10px] text-red-400 text-center px-1">
+                   Error: {prStatus.error}
+                </div>
+             )}
           </div>
         </aside>
 
@@ -197,11 +348,10 @@ function App() {
                 <FolderOpen className="w-4 h-4" />
               </div>
               <div>
-                <span className="font-mono text-sm text-slate-200 block">{selectedFile?.path || 'No file selected'}</span>
+                <span className="font-mono text-sm text-slate-200 block max-w-[300px] truncate">{selectedFile?.path || 'No file selected'}</span>
                 {selectedFile?.status === 'completed' && (
                   <span className="text-[10px] text-emerald-500 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    Analyzed
+                    <Check className="w-3 h-3" /> Analyzed
                   </span>
                 )}
               </div>
@@ -327,7 +477,7 @@ function App() {
                       <p className="text-sm max-w-sm leading-relaxed text-slate-400">
                         {isProjectAnalyzing 
                           ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
-                          : 'Select a file and click "Run Analysis" or upload a fresh ZIP to begin.'}
+                          : 'Select a file to view or import a project to start.'}
                       </p>
                    </div>
                 )}
