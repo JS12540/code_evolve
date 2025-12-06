@@ -216,8 +216,11 @@ function App() {
   const runBatchAnalysis = async (filesToProcess: ProjectFile[]) => {
     setIsProjectAnalyzing(true);
     
+    // 1. Identify valid files and mark ignored/skipped immediately
+    const filesToAnalyze: ProjectFile[] = [];
+
+    // Pre-processing loop to handle skips
     for (const file of filesToProcess) {
-       // Re-evaluate 'completed' files only if forced? For now, skip.
        if (file.status === 'completed') continue;
 
        const lowerPath = file.path.toLowerCase();
@@ -242,21 +245,42 @@ function App() {
        const isEmpty = !file.content || file.content.trim().length === 0;
 
        if (isIgnored || !isAnalyzable || isEmpty) {
-         // Mark as completed so it doesn't stay 'pending' in the dashboard
-         // We do not provide a 'result', so it will show as completed with no issues.
          updateFileStatus(file.path, 'completed'); 
-         continue;
-       }
-
-       try {
-         updateFileStatus(file.path, 'analyzing');
-         const result = await analyzeCode(file.content, file.path, targetVersion);
-         updateFileStatus(file.path, 'completed', result);
-       } catch (err: any) {
-         console.error(`Error analyzing ${file.path}:`, err);
-         updateFileStatus(file.path, 'error');
+       } else {
+         filesToAnalyze.push(file);
        }
     }
+
+    // 2. Parallel Processing with Concurrency Limit
+    const CONCURRENCY_LIMIT = 4; // Process 4 files at a time to be safe with API/Browser limits
+    const queue = [...filesToAnalyze];
+    
+    const analyzeWorker = async () => {
+        while (queue.length > 0) {
+            const file = queue.shift();
+            if (!file) break;
+            
+            try {
+                // Determine status inside the worker to ensure state updates happen in order
+                updateFileStatus(file.path, 'analyzing');
+                
+                // Actual API Call
+                const result = await analyzeCode(file.content, file.path, targetVersion);
+                
+                updateFileStatus(file.path, 'completed', result);
+            } catch (err: any) {
+                console.error(`Error analyzing ${file.path}:`, err);
+                updateFileStatus(file.path, 'error');
+            }
+        }
+    };
+
+    // Create workers
+    const workers = Array(Math.min(CONCURRENCY_LIMIT, filesToAnalyze.length))
+        .fill(null)
+        .map(() => analyzeWorker());
+
+    await Promise.all(workers);
     
     setIsProjectAnalyzing(false);
   };
@@ -539,8 +563,8 @@ function App() {
               {/* Editor & Results Split */}
               <div className="flex-1 flex min-h-0">
                 {/* Left Column: Original Code */}
-                <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50">
-                    <div className="flex-1 p-4 pb-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden">
+                    <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
                       <Editor 
                         label="Current File Content" 
                         code={selectedFile?.content || ''} 
@@ -553,7 +577,7 @@ function App() {
                 </div>
 
                 {/* Right Column: Results (Tabs) */}
-                <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20">
+                <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20 overflow-hidden">
                     {selectedFile?.result ? (
                       <>
                         {/* Tabs */}
