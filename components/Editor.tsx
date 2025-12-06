@@ -15,6 +15,14 @@ const Editor: React.FC<EditorProps> = ({ code, onChange, readOnly = false, label
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
 
+  // Reset scroll position when the file context (label) changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.scrollTop = 0;
+      textareaRef.current.scrollLeft = 0;
+    }
+  }, [label]);
+
   const handleCopy = () => {
     navigator.clipboard.writeText(code);
     setCopied(true);
@@ -33,7 +41,7 @@ const Editor: React.FC<EditorProps> = ({ code, onChange, readOnly = false, label
   return (
     <div className={`flex flex-col h-full bg-surface rounded-xl border border-slate-700 overflow-hidden shadow-sm hover:border-slate-600 transition-colors ${className}`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 bg-slate-800/80 border-b border-slate-700 backdrop-blur-sm">
+      <div className="flex items-center justify-between px-4 py-2 bg-slate-800/80 border-b border-slate-700 backdrop-blur-sm flex-shrink-0">
         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono flex items-center gap-2">
           {label}
           {!readOnly && <span className="w-1.5 h-1.5 rounded-full bg-primary/80"></span>}
@@ -55,11 +63,11 @@ const Editor: React.FC<EditorProps> = ({ code, onChange, readOnly = false, label
       </div>
 
       {/* Editor Area */}
-      <div className="flex-1 relative group flex bg-[#0a0f1e]">
+      <div className="flex-1 relative group flex bg-[#0a0f1e] min-h-0">
         {/* Line Numbers */}
         <div 
           ref={lineNumbersRef}
-          className="hidden md:block w-12 pt-4 pb-4 bg-slate-900/50 border-r border-slate-800 text-right pr-3 select-none overflow-hidden text-slate-600 font-mono text-sm leading-6"
+          className="hidden md:block w-14 pt-4 pb-4 bg-slate-900/50 border-r border-slate-800 text-right pr-3 select-none overflow-hidden text-slate-600 font-mono text-sm leading-6 flex-shrink-0"
         >
           {lineNumbers.map(num => (
             <div key={num}>{num}</div>
@@ -79,13 +87,13 @@ const Editor: React.FC<EditorProps> = ({ code, onChange, readOnly = false, label
             flex-1 w-full h-full p-4 bg-transparent text-sm font-mono leading-6 resize-none focus:outline-none 
             ${readOnly ? 'text-slate-300' : 'text-slate-200'}
             placeholder-slate-700 selection:bg-primary/20
-            custom-scrollbar
+            custom-scrollbar whitespace-pre overflow-auto
           `}
         />
         
         {!readOnly && (
-           <div className="absolute bottom-2 right-4 text-[10px] text-slate-600 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity font-mono">
-              Line {lineCount}
+           <div className="absolute bottom-2 right-4 text-[10px] text-slate-600 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity font-mono bg-slate-900/80 px-2 rounded">
+              {lineCount} lines
            </div>
         )}
       </div>

@@ -540,7 +540,7 @@ function App() {
               <div className="flex-1 flex min-h-0">
                 {/* Left Column: Original Code */}
                 <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50">
-                    <div className="flex-1 p-4 pb-0">
+                    <div className="flex-1 p-4 pb-0 overflow-hidden">
                       <Editor 
                         label="Current File Content" 
                         code={selectedFile?.content || ''} 
@@ -557,7 +557,7 @@ function App() {
                     {selectedFile?.result ? (
                       <>
                         {/* Tabs */}
-                        <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1">
+                        <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1 flex-shrink-0">
                           <button 
                             onClick={() => setActiveTab('report')}
                             className={`
@@ -587,7 +587,7 @@ function App() {
                         </div>
 
                         {/* Tab Content */}
-                        <div className="flex-1 min-h-0 p-4 relative bg-surface/30">
+                        <div className="flex-1 min-h-0 p-4 relative bg-surface/30 overflow-hidden">
                           {activeTab === 'code' && (
                             <Editor 
                               label="AI Refactored Result" 
