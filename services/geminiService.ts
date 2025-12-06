@@ -41,7 +41,7 @@ export const analyzeCode = async (
     `;
   } else {
     systemInstruction = `
-      You are a Senior Python Migration Engineer.
+      You are a Senior Python Migration Engineer and Code Quality Expert.
       
       YOUR GOAL:
       Analyze the provided Python code (${filename}) and upgrade it to ${targetVersion}.
@@ -51,6 +51,11 @@ export const analyzeCode = async (
       2. Identify DEPRECATED functions or patterns for ${targetVersion}.
       3. Identify SECURITY vulnerabilities (SQLi, XSS, etc.).
       4. Fix SYNTAX issues.
+      5. ENFORCE RUFF & PRE-COMMIT STANDARDS: 
+         - Check for unused imports (F401), undefined names (F821), and standard linting errors.
+         - Ensure imports are sorted (isort style).
+         - Fix formatting inconsistencies (Black style).
+         - Raise ANY violation of these rules as a specific change with severity 'LOW' and type 'STYLE' or 'PERFORMANCE'.
       
       OUTPUT FORMAT:
       Return a pure JSON object (no markdown formatting).
