@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { ProjectFile } from '../types';
 import { 
@@ -12,13 +13,15 @@ import {
   ChevronRight, 
   ChevronDown,
   FileJson,
-  File
+  File,
+  LayoutDashboard
 } from 'lucide-react';
 
 interface FileTreeProps {
   files: ProjectFile[];
   selectedFile: ProjectFile | null;
-  onSelect: (file: ProjectFile) => void;
+  selectedPath: string;
+  onSelect: (path: string) => void;
 }
 
 interface TreeNode {
@@ -33,12 +36,10 @@ const buildTree = (files: ProjectFile[]): TreeNode[] => {
   const root: TreeNode[] = [];
   const map: Record<string, TreeNode> = {};
 
-  // Sort files to ensure folders are created before files if strictly needed, 
-  // but the map approach handles out-of-order creation.
-  // We do want to sort the final children: Folders first, then files, alphabetical.
-  
   files.forEach(file => {
-    const parts = file.path.split('/');
+    // Normalize path separators
+    const normalizedPath = file.path.replace(/\\/g, '/');
+    const parts = normalizedPath.split('/').filter(Boolean);
     let currentPath = '';
 
     parts.forEach((part, index) => {
@@ -67,7 +68,6 @@ const buildTree = (files: ProjectFile[]): TreeNode[] => {
     });
   });
 
-  // Recursive sort function
   const sortNodes = (nodes: TreeNode[]) => {
     nodes.sort((a, b) => {
       if (a.type === b.type) {
@@ -89,14 +89,13 @@ const buildTree = (files: ProjectFile[]): TreeNode[] => {
 const TreeNodeItem: React.FC<{
   node: TreeNode;
   level: number;
-  selectedFile: ProjectFile | null;
-  onSelect: (file: ProjectFile) => void;
-}> = ({ node, level, selectedFile, onSelect }) => {
-  const [isOpen, setIsOpen] = useState(true); // Default open for better visibility
+  selectedPath: string;
+  onSelect: (path: string) => void;
+}> = ({ node, level, selectedPath, onSelect }) => {
+  const [isOpen, setIsOpen] = useState(true);
 
-  const isSelected = node.type === 'file' && selectedFile?.path === node.file?.path;
+  const isSelected = node.type === 'file' && selectedPath === node.file?.path;
   
-  // Icon logic
   const getFileIcon = (file: ProjectFile) => {
     if (file.path.endsWith('.py')) return <FileCode className="w-4 h-4 text-blue-400" />;
     if (file.path.endsWith('.json')) return <FileJson className="w-4 h-4 text-yellow-400" />;
@@ -135,7 +134,7 @@ const TreeNodeItem: React.FC<{
                 key={child.path} 
                 node={child} 
                 level={level + 1} 
-                selectedFile={selectedFile} 
+                selectedPath={selectedPath} 
                 onSelect={onSelect} 
               />
             ))}
@@ -145,10 +144,9 @@ const TreeNodeItem: React.FC<{
     );
   }
 
-  // File Node
   return (
     <button
-      onClick={() => node.file && onSelect(node.file)}
+      onClick={() => node.file && onSelect(node.file.path)}
       className={`
         w-full flex items-center gap-2 py-1.5 pr-2 rounded-md text-left transition-all group relative
         ${isSelected ? 'bg-primary/20 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}
@@ -164,7 +162,7 @@ const TreeNodeItem: React.FC<{
   );
 };
 
-const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, onSelect }) => {
+const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, selectedPath, onSelect }) => {
   const treeData = useMemo(() => buildTree(files), [files]);
 
   return (
@@ -178,6 +176,18 @@ const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, onSelect }) =>
       </div>
       
       <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
+        {/* Dashboard Link */}
+        <button
+          onClick={() => onSelect('__PROJECT_ROOT__')}
+          className={`
+            w-full flex items-center gap-2 py-2 px-2 rounded-md text-left transition-all mb-2
+            ${selectedPath === '__PROJECT_ROOT__' ? 'bg-primary text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}
+          `}
+        >
+           <LayoutDashboard className="w-4 h-4" />
+           <span className="text-xs font-bold">Project Overview</span>
+        </button>
+
         {files.length === 0 ? (
           <div className="text-center py-10 px-4">
              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-3">
@@ -192,7 +202,7 @@ const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, onSelect }) =>
               key={node.path} 
               node={node} 
               level={0} 
-              selectedFile={selectedFile} 
+              selectedPath={selectedPath} 
               onSelect={onSelect} 
             />
           ))

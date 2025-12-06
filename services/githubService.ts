@@ -3,7 +3,6 @@ import { ProjectFile, GitHubConfig, PullRequestResult, GitHubUser, GitHubRepo } 
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
-// Helper to parse "https://github.com/owner/repo"
 export const parseRepoUrl = (url: string): { owner: string; repo: string } | null => {
   try {
     const urlObj = new URL(url);
@@ -35,9 +34,6 @@ export const validateToken = async (token: string): Promise<GitHubUser> => {
 };
 
 export const fetchUserRepos = async (token: string): Promise<GitHubRepo[]> => {
-  // Fetch repositories from the user and organizations they have access to
-  // visibility=all: Get public and private
-  // affiliation=owner,collaborator,organization_member: Get everything
   const res = await fetch(
     `${GITHUB_API_BASE}/user/repos?sort=updated&per_page=100&visibility=all&affiliation=owner,collaborator,organization_member`, 
     { headers: getHeaders(token) }
@@ -47,36 +43,32 @@ export const fetchUserRepos = async (token: string): Promise<GitHubRepo[]> => {
   return res.json();
 };
 
-// Fetch all files from a repo (naive recursive tree fetch)
 export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFile[]> => {
   if (!config.owner || !config.repo || !config.token) {
     throw new Error("Missing GitHub configuration");
   }
 
-  // 1. Get default branch SHA
+  // 1. Get default branch
   const repoRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}`, {
     headers: getHeaders(config.token)
   });
-  if (!repoRes.ok) throw new Error("Failed to fetch repo info. Ensure you have access to this repository.");
+  if (!repoRes.ok) throw new Error("Failed to fetch repo info. Ensure you have access.");
   const repoData = await repoRes.json();
   const defaultBranch = repoData.default_branch;
 
-  // 2. Get Tree
+  // 2. Get Tree (Recursive)
   const treeRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/trees/${defaultBranch}?recursive=1`, {
     headers: getHeaders(config.token)
   });
   if (!treeRes.ok) throw new Error("Failed to fetch file tree");
   const treeData = await treeRes.json();
 
-  const files: ProjectFile[] = [];
-
-  // 3. Filter and fetch blobs 
-  // Increased limit to 100 for better project visibility
-  // Added more extensions to visibility list
+  // 3. Filter valid files
   const validEntries = treeData.tree.filter((node: any) => {
     if (node.type !== 'blob') return false;
     
     const path = node.path.toLowerCase();
+    // Allow a wide range of code and config files
     return (
       path.endsWith('.py') || 
       path.includes('requirements') || 
@@ -95,41 +87,40 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
       path.endsWith('.dockerfile') ||
       path.endsWith('.gitignore')
     );
-  }).slice(0, 100); 
+  }).slice(0, 100); // Limit to 100 files to avoid rate limits
 
-  for (const entry of validEntries) {
-    const blobRes = await fetch(entry.url, { headers: getHeaders(config.token) });
-    if (blobRes.ok) {
+  // 4. Fetch blobs in Parallel
+  const filePromises = validEntries.map(async (entry: any) => {
+    try {
+      const blobRes = await fetch(entry.url, { headers: getHeaders(config.token) });
+      if (!blobRes.ok) return null;
+      
       const blobData = await blobRes.json();
-      // Content is base64 encoded
-      // Note: simple atob() fails on unicode, but for MVP code migration it's usually fine.
-      // A more robust solution would be needed for complex unicode files.
-      try {
-        const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
-        
-        files.push({
-          path: entry.path,
-          content: content,
-          language: entry.path.endsWith('.py') ? 'python' : 'text',
-          status: 'pending'
-        });
-      } catch (e) {
-        console.warn(`Failed to decode file ${entry.path}`, e);
-        // Push with placeholder if decode fails (e.g. binary disguised as text)
-        files.push({
-          path: entry.path,
-          content: "// Binary or non-utf8 content could not be displayed.",
-          language: 'text',
-          status: 'error'
-        });
-      }
+      // Decode content
+      const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
+      
+      return {
+        path: entry.path,
+        content: content,
+        language: entry.path.endsWith('.py') ? 'python' : 'text',
+        status: 'pending'
+      } as ProjectFile;
+    } catch (e) {
+      console.warn(`Failed to process ${entry.path}`, e);
+      return {
+        path: entry.path,
+        content: "// Error reading file content.",
+        language: 'text',
+        status: 'error'
+      } as ProjectFile;
     }
-  }
+  });
+
+  const files = (await Promise.all(filePromises)).filter((f): f is ProjectFile => f !== null);
 
   return files;
 };
 
-// Create a PR with changes
 export const createPullRequest = async (
   config: GitHubConfig, 
   files: ProjectFile[]
@@ -139,29 +130,33 @@ export const createPullRequest = async (
   }
 
   const headers = getHeaders(config.token);
-  const changedFiles = files.filter(f => f.status === 'completed' && f.result?.refactoredCode && f.result.refactoredCode !== f.content);
+  
+  // Identifying all completed and changed files
+  const changedFiles = files.filter(f => 
+    f.status === 'completed' && 
+    f.result?.refactoredCode && 
+    f.result.refactoredCode !== f.content
+  );
   
   if (changedFiles.length === 0) {
-    throw new Error("No changes detected to commit.");
+    throw new Error("No changes detected in any file to commit.");
   }
 
-  // 1. Get current head reference (main/master)
+  // 1. Get base info
   const repoRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}`, { headers });
   const repoData = await repoRes.json();
   const defaultBranch = repoData.default_branch;
 
-  // Check if we have push access
   if (!repoData.permissions?.push) {
-     throw new Error("You don't have write access to this repository. Cannot create a Pull Request directly.");
+     throw new Error("Write access denied. Cannot create PR.");
   }
 
   const refRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/ref/heads/${defaultBranch}`, { headers });
   const refData = await refRes.json();
   const baseSha = refData.object.sha;
 
-  // 2. Create blobs for new files
-  const treeItems = [];
-  for (const file of changedFiles) {
+  // 2. Create blobs in parallel
+  const treeItems = await Promise.all(changedFiles.map(async (file) => {
     const blobRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/blobs`, {
       method: 'POST',
       headers,
@@ -171,15 +166,15 @@ export const createPullRequest = async (
       })
     });
     const blobData = await blobRes.json();
-    treeItems.push({
+    return {
       path: file.path,
       mode: '100644',
       type: 'blob',
       sha: blobData.sha
-    });
-  }
+    };
+  }));
 
-  // 3. Create a new tree
+  // 3. Create Tree
   const treeRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/trees`, {
     method: 'POST',
     headers,
@@ -191,12 +186,12 @@ export const createPullRequest = async (
   const treeData = await treeRes.json();
   const newTreeSha = treeData.sha;
 
-  // 4. Create commit
+  // 4. Create Commit
   const commitRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/commits`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      message: 'refactor: AI-powered migration updates\n\nAutomated changes by CodeEvolve.',
+      message: `refactor: AI Migration for ${changedFiles.length} files\n\nAutomated changes by CodeEvolve.`,
       tree: newTreeSha,
       parents: [baseSha]
     })
@@ -204,7 +199,7 @@ export const createPullRequest = async (
   const commitData = await commitRes.json();
   const newCommitSha = commitData.sha;
 
-  // 5. Create Branch (Ref)
+  // 5. Create Branch
   const branchName = `code-evolve-${Date.now()}`;
   await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/refs`, {
     method: 'POST',
@@ -215,13 +210,13 @@ export const createPullRequest = async (
     })
   });
 
-  // 6. Create Pull Request
+  // 6. Create PR
   const prRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/pulls`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       title: 'refactor: Automated AI Migration',
-      body: 'This PR contains automated refactoring and security fixes generated by CodeEvolve AI.\n\n### Changes\n- Dependency updates\n- Security patches\n- Deprecation fixes',
+      body: `This PR contains automated refactoring for **${changedFiles.length} files**.\n\n### Summary\nGenerated by CodeEvolve AI. Includes dependency updates, security patches, and Python version compatibility fixes.`,
       head: branchName,
       base: defaultBranch
     })

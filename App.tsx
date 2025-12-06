@@ -5,6 +5,7 @@ import Editor from './components/Editor';
 import ChangeLog from './components/ChangeLog';
 import FileTree from './components/FileTree';
 import GitHubAuth from './components/GitHubAuth';
+import ProjectDashboard from './components/ProjectDashboard';
 import { analyzeCode } from './services/geminiService';
 import { extractZip, createAndDownloadZip } from './services/zipService';
 import { fetchRepoContents, createPullRequest, fetchUserRepos } from './services/githubService';
@@ -51,6 +52,7 @@ if __name__ == '__main__':
 `;
 
 type SourceMode = 'upload' | 'github';
+const PROJECT_ROOT_ID = '__PROJECT_ROOT__';
 
 function App() {
   const [files, setFiles] = useState<ProjectFile[]>([
@@ -61,6 +63,7 @@ function App() {
       status: 'pending'
     }
   ]);
+  // Defaults to dashboard view if more than 1 file, else the specific file
   const [selectedFilePath, setSelectedFilePath] = useState<string>('example.py');
   const [targetVersion, setTargetVersion] = useState<TargetVersion>(TargetVersion.PY_3_12);
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
@@ -82,7 +85,7 @@ function App() {
   // Right panel view state
   const [activeTab, setActiveTab] = useState<'report' | 'code'>('report');
 
-  const selectedFile = files.find(f => f.path === selectedFilePath) || files[0];
+  const selectedFile = files.find(f => f.path === selectedFilePath);
 
   // Filter repos based on search
   const filteredRepos = useMemo(() => {
@@ -107,6 +110,8 @@ function App() {
           setIsProjectAnalyzing(false);
           return;
         }
+        setFiles(extractedFiles);
+        setSelectedFilePath(PROJECT_ROOT_ID);
       } else {
         const content = await file.text();
         extractedFiles = [{
@@ -115,10 +120,10 @@ function App() {
           language: file.name.endsWith('.py') ? 'python' : 'text',
           status: 'pending'
         }];
+        setFiles(extractedFiles);
+        setSelectedFilePath(extractedFiles[0].path);
       }
       
-      setFiles(extractedFiles);
-      setSelectedFilePath(extractedFiles[0].path);
       await runBatchAnalysis(extractedFiles);
 
     } catch (err: any) {
@@ -170,7 +175,7 @@ function App() {
         setGlobalError("No supported files found in the repository (or empty).");
       } else {
         setFiles(fetchedFiles);
-        setSelectedFilePath(fetchedFiles[0].path);
+        setSelectedFilePath(PROJECT_ROOT_ID); // Go to dashboard
         await runBatchAnalysis(fetchedFiles);
       }
     } catch (err: any) {
@@ -194,7 +199,7 @@ function App() {
         token: githubToken,
         owner,
         repo
-      }, files);
+      }, files); // Pass ALL files, the service filters for changes
       setPrStatus({ loading: false, url: result.url });
     } catch (err: any) {
       setPrStatus({ loading: false, error: err.message });
@@ -211,6 +216,7 @@ function App() {
     setIsProjectAnalyzing(true);
     
     for (const file of filesToProcess) {
+       // Re-evaluate 'completed' files only if forced? For now, skip.
        if (file.status === 'completed') continue;
 
        const isAnalyzable = file.language === 'python' || 
@@ -231,7 +237,6 @@ function App() {
     }
     
     setIsProjectAnalyzing(false);
-    setActiveTab('report');
   };
 
   const handleManualAnalyze = async () => {
@@ -250,6 +255,8 @@ function App() {
         }
     }
   };
+
+  const filesChangedCount = files.filter(f => f.status === 'completed' && f.result?.refactoredCode && f.result.refactoredCode !== f.content).length;
 
   return (
     <div className="min-h-screen bg-background text-slate-200 font-sans selection:bg-primary/20 flex flex-col h-screen overflow-hidden">
@@ -387,8 +394,9 @@ function App() {
           <div className="flex-1 min-h-0">
             <FileTree 
               files={files} 
-              selectedFile={selectedFile} 
-              onSelect={(f) => setSelectedFilePath(f.path)} 
+              selectedFile={selectedFile || null} 
+              selectedPath={selectedFilePath}
+              onSelect={(path) => setSelectedFilePath(path)} 
             />
           </div>
 
@@ -416,11 +424,11 @@ function App() {
              {sourceMode === 'github' && githubUser && (
                 <button
                   onClick={handleCreatePR}
-                  disabled={prStatus?.loading || isProjectAnalyzing || !selectedRepoFullName}
+                  disabled={prStatus?.loading || isProjectAnalyzing || !selectedRepoFullName || filesChangedCount === 0}
                   className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
                 >
                    {prStatus?.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GitPullRequest className="w-3.5 h-3.5" />}
-                   Create Pull Request
+                   {filesChangedCount > 0 ? `Create PR (${filesChangedCount} files)` : 'Create Pull Request'}
                 </button>
              )}
              
@@ -442,148 +450,157 @@ function App() {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 bg-background relative z-10">
           
-          {/* Toolbar */}
-          <div className="h-14 border-b border-slate-700 flex items-center justify-between px-6 bg-surface/30 backdrop-blur">
-            <div className="flex items-center gap-3">
-              <div className="p-1.5 bg-slate-800 rounded-md text-slate-400">
-                <FolderOpen className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="font-mono text-sm text-slate-200 block max-w-[300px] truncate">{selectedFile?.path || 'No file selected'}</span>
-                {selectedFile?.status === 'completed' && (
-                  <span className="text-[10px] text-emerald-500 flex items-center gap-1">
-                    <Check className="w-3 h-3" /> Analyzed
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-               <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
-                <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Target</span>
-                <select 
-                  value={targetVersion}
-                  onChange={(e) => setTargetVersion(e.target.value as TargetVersion)}
-                  className="bg-transparent border-none text-slate-200 text-xs focus:ring-0 cursor-pointer py-1"
-                >
-                  {Object.values(TargetVersion).map((v) => (
-                    <option key={v} value={v} className="bg-slate-800">{v}</option>
-                  ))}
-                </select>
-              </div>
-
-              <button
-                onClick={handleManualAnalyze}
-                disabled={isProjectAnalyzing || !selectedFile}
-                className="flex items-center gap-2 px-4 py-1.5 bg-primary hover:bg-blue-600 text-white rounded-md text-xs font-semibold transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
-              >
-                {selectedFile?.status === 'analyzing' ? 'Analyzing...' : 'Run Analysis'}
-              </button>
-            </div>
-          </div>
-
-          {/* Error Banner */}
-          {globalError && (
-            <div className="bg-red-500/10 border-b border-red-500/20 text-red-400 p-2 px-6 flex items-center gap-2 text-xs">
-              <AlertCircle className="w-4 h-4" />
-              {globalError}
-            </div>
-          )}
-
-          {/* Editor & Results Split */}
-          <div className="flex-1 flex min-h-0">
-             
-             {/* Left Column: Original Code */}
-             <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50">
-                <div className="flex-1 p-4 pb-0">
-                   <Editor 
-                    label="Current File Content" 
-                    code={selectedFile?.content || ''} 
-                    onChange={(val) => {
-                       setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
-                    }}
-                    readOnly={false}
-                  />
+          {selectedFilePath === PROJECT_ROOT_ID ? (
+             <ProjectDashboard 
+               files={files} 
+               isAnalyzing={isProjectAnalyzing}
+               onSelectFile={setSelectedFilePath}
+             />
+          ) : (
+            <>
+              {/* Toolbar */}
+              <div className="h-14 border-b border-slate-700 flex items-center justify-between px-6 bg-surface/30 backdrop-blur">
+                <div className="flex items-center gap-3">
+                  <div className="p-1.5 bg-slate-800 rounded-md text-slate-400">
+                    <FolderOpen className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="font-mono text-sm text-slate-200 block max-w-[300px] truncate">{selectedFile?.path || 'No file selected'}</span>
+                    {selectedFile?.status === 'completed' && (
+                      <span className="text-[10px] text-emerald-500 flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Analyzed
+                      </span>
+                    )}
+                  </div>
                 </div>
-             </div>
 
-             {/* Right Column: Results (Tabs) */}
-             <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20">
-                {selectedFile?.result ? (
-                   <>
-                    {/* Tabs */}
-                    <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1">
-                      <button 
-                        onClick={() => setActiveTab('report')}
-                        className={`
-                          flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                          ${activeTab === 'report' 
-                            ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
-                            : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                          }
-                        `}
-                      >
-                        <BarChart3 className="w-3.5 h-3.5" />
-                        Migration Report
-                      </button>
-                      <button 
-                        onClick={() => setActiveTab('code')}
-                        className={`
-                          flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                          ${activeTab === 'code' 
-                            ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
-                            : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                          }
-                        `}
-                      >
-                        <Code2 className="w-3.5 h-3.5" />
-                        Refactored Code
-                      </button>
-                    </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
+                    <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Target</span>
+                    <select 
+                      value={targetVersion}
+                      onChange={(e) => setTargetVersion(e.target.value as TargetVersion)}
+                      className="bg-transparent border-none text-slate-200 text-xs focus:ring-0 cursor-pointer py-1"
+                    >
+                      {Object.values(TargetVersion).map((v) => (
+                        <option key={v} value={v} className="bg-slate-800">{v}</option>
+                      ))}
+                    </select>
+                  </div>
 
-                    {/* Tab Content */}
-                    <div className="flex-1 min-h-0 p-4 relative bg-surface/30">
-                       {activeTab === 'code' && (
-                         <Editor 
-                           label="AI Refactored Result" 
-                           code={selectedFile.result.refactoredCode} 
-                           readOnly={true} 
-                           className="h-full shadow-xl"
-                         />
-                       )}
-                       {activeTab === 'report' && (
-                         <ChangeLog 
-                           changes={selectedFile.result.changes} 
-                           summary={selectedFile.result.summary} 
-                           references={selectedFile.result.references}
-                         />
-                       )}
+                  <button
+                    onClick={handleManualAnalyze}
+                    disabled={isProjectAnalyzing || !selectedFile}
+                    className="flex items-center gap-2 px-4 py-1.5 bg-primary hover:bg-blue-600 text-white rounded-md text-xs font-semibold transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
+                  >
+                    {selectedFile?.status === 'analyzing' ? 'Analyzing...' : 'Run Analysis'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Error Banner */}
+              {globalError && (
+                <div className="bg-red-500/10 border-b border-red-500/20 text-red-400 p-2 px-6 flex items-center gap-2 text-xs">
+                  <AlertCircle className="w-4 h-4" />
+                  {globalError}
+                </div>
+              )}
+
+              {/* Editor & Results Split */}
+              <div className="flex-1 flex min-h-0">
+                {/* Left Column: Original Code */}
+                <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50">
+                    <div className="flex-1 p-4 pb-0">
+                      <Editor 
+                        label="Current File Content" 
+                        code={selectedFile?.content || ''} 
+                        onChange={(val) => {
+                          setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
+                        }}
+                        readOnly={false}
+                      />
                     </div>
-                   </>
-                ) : (
-                   <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
-                      <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
-                        {isProjectAnalyzing ? (
-                          <>
-                            <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
-                            <Loader2 className="w-8 h-8 text-primary" />
-                          </>
-                        ) : (
-                          <FileCode className="w-8 h-8 opacity-50" />
-                        )}
+                </div>
+
+                {/* Right Column: Results (Tabs) */}
+                <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20">
+                    {selectedFile?.result ? (
+                      <>
+                        {/* Tabs */}
+                        <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1">
+                          <button 
+                            onClick={() => setActiveTab('report')}
+                            className={`
+                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                              ${activeTab === 'report' 
+                                ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
+                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                              }
+                            `}
+                          >
+                            <BarChart3 className="w-3.5 h-3.5" />
+                            Migration Report
+                          </button>
+                          <button 
+                            onClick={() => setActiveTab('code')}
+                            className={`
+                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                              ${activeTab === 'code' 
+                                ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
+                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                              }
+                            `}
+                          >
+                            <Code2 className="w-3.5 h-3.5" />
+                            Refactored Code
+                          </button>
+                        </div>
+
+                        {/* Tab Content */}
+                        <div className="flex-1 min-h-0 p-4 relative bg-surface/30">
+                          {activeTab === 'code' && (
+                            <Editor 
+                              label="AI Refactored Result" 
+                              code={selectedFile.result.refactoredCode} 
+                              readOnly={true} 
+                              className="h-full shadow-xl"
+                            />
+                          )}
+                          {activeTab === 'report' && (
+                            <ChangeLog 
+                              changes={selectedFile.result.changes} 
+                              summary={selectedFile.result.summary} 
+                              references={selectedFile.result.references}
+                            />
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
+                          <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
+                            {isProjectAnalyzing ? (
+                              <>
+                                <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
+                                <Loader2 className="w-8 h-8 text-primary" />
+                              </>
+                            ) : (
+                              <FileCode className="w-8 h-8 opacity-50" />
+                            )}
+                          </div>
+                          <h3 className="text-lg font-medium text-slate-200 mb-2">
+                            {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
+                          </h3>
+                          <p className="text-sm max-w-sm leading-relaxed text-slate-400">
+                            {isProjectAnalyzing 
+                              ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
+                              : 'Select a file to view detailed changes.'}
+                          </p>
                       </div>
-                      <h3 className="text-lg font-medium text-slate-200 mb-2">
-                        {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
-                      </h3>
-                      <p className="text-sm max-w-sm leading-relaxed text-slate-400">
-                        {isProjectAnalyzing 
-                          ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
-                          : 'Select a file to view or import a project to start.'}
-                      </p>
-                   </div>
-                )}
-             </div>
-          </div>
+                    )}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>
