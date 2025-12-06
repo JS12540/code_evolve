@@ -1,4 +1,5 @@
-import { ProjectFile, GitHubConfig, PullRequestResult } from '../types';
+
+import { ProjectFile, GitHubConfig, PullRequestResult, GitHubUser, GitHubRepo } from '../types';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -22,6 +23,30 @@ const getHeaders = (token: string) => ({
   'Content-Type': 'application/json',
 });
 
+export const validateToken = async (token: string): Promise<GitHubUser> => {
+  const res = await fetch(`${GITHUB_API_BASE}/user`, {
+    headers: getHeaders(token)
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("Invalid Authorization Key.");
+    throw new Error("Failed to connect to GitHub. Check your internet connection.");
+  }
+  return res.json();
+};
+
+export const fetchUserRepos = async (token: string): Promise<GitHubRepo[]> => {
+  // Fetch repositories from the user and organizations they have access to
+  // visibility=all: Get public and private
+  // affiliation=owner,collaborator,organization_member: Get everything
+  const res = await fetch(
+    `${GITHUB_API_BASE}/user/repos?sort=updated&per_page=100&visibility=all&affiliation=owner,collaborator,organization_member`, 
+    { headers: getHeaders(token) }
+  );
+
+  if (!res.ok) throw new Error("Failed to fetch repositories.");
+  return res.json();
+};
+
 // Fetch all files from a repo (naive recursive tree fetch)
 export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFile[]> => {
   if (!config.owner || !config.repo || !config.token) {
@@ -32,7 +57,7 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
   const repoRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}`, {
     headers: getHeaders(config.token)
   });
-  if (!repoRes.ok) throw new Error("Failed to fetch repo info");
+  if (!repoRes.ok) throw new Error("Failed to fetch repo info. Ensure you have access to this repository.");
   const repoData = await repoRes.json();
   const defaultBranch = repoData.default_branch;
 
@@ -45,25 +70,59 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
 
   const files: ProjectFile[] = [];
 
-  // 3. Filter and fetch blobs (Limit to first 20 valid text files to prevent rate limiting in demo)
-  const validEntries = treeData.tree.filter((node: any) => 
-    node.type === 'blob' && 
-    (node.path.endsWith('.py') || node.path.includes('requirements') || node.path.includes('lock') || node.path.includes('toml'))
-  ).slice(0, 20); 
+  // 3. Filter and fetch blobs 
+  // Increased limit to 100 for better project visibility
+  // Added more extensions to visibility list
+  const validEntries = treeData.tree.filter((node: any) => {
+    if (node.type !== 'blob') return false;
+    
+    const path = node.path.toLowerCase();
+    return (
+      path.endsWith('.py') || 
+      path.includes('requirements') || 
+      path.includes('lock') || 
+      path.includes('toml') ||
+      path.endsWith('.md') ||
+      path.endsWith('.json') ||
+      path.endsWith('.js') ||
+      path.endsWith('.ts') ||
+      path.endsWith('.tsx') ||
+      path.endsWith('.jsx') ||
+      path.endsWith('.html') ||
+      path.endsWith('.css') ||
+      path.endsWith('.yaml') ||
+      path.endsWith('.yml') ||
+      path.endsWith('.dockerfile') ||
+      path.endsWith('.gitignore')
+    );
+  }).slice(0, 100); 
 
   for (const entry of validEntries) {
     const blobRes = await fetch(entry.url, { headers: getHeaders(config.token) });
     if (blobRes.ok) {
       const blobData = await blobRes.json();
       // Content is base64 encoded
-      const content = atob(blobData.content.replace(/\n/g, ''));
-      
-      files.push({
-        path: entry.path,
-        content: content,
-        language: entry.path.endsWith('.py') ? 'python' : 'text',
-        status: 'pending'
-      });
+      // Note: simple atob() fails on unicode, but for MVP code migration it's usually fine.
+      // A more robust solution would be needed for complex unicode files.
+      try {
+        const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
+        
+        files.push({
+          path: entry.path,
+          content: content,
+          language: entry.path.endsWith('.py') ? 'python' : 'text',
+          status: 'pending'
+        });
+      } catch (e) {
+        console.warn(`Failed to decode file ${entry.path}`, e);
+        // Push with placeholder if decode fails (e.g. binary disguised as text)
+        files.push({
+          path: entry.path,
+          content: "// Binary or non-utf8 content could not be displayed.",
+          language: 'text',
+          status: 'error'
+        });
+      }
     }
   }
 
@@ -90,6 +149,11 @@ export const createPullRequest = async (
   const repoRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}`, { headers });
   const repoData = await repoRes.json();
   const defaultBranch = repoData.default_branch;
+
+  // Check if we have push access
+  if (!repoData.permissions?.push) {
+     throw new Error("You don't have write access to this repository. Cannot create a Pull Request directly.");
+  }
 
   const refRes = await fetch(`${GITHUB_API_BASE}/repos/${config.owner}/${config.repo}/git/ref/heads/${defaultBranch}`, { headers });
   const refData = await refRes.json();

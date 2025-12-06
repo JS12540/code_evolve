@@ -57,11 +57,31 @@ export interface FileNode {
 }
 
 export interface GitHubConfig {
-  repoUrl: string;
+  repoUrl: string; // Kept for compatibility, but we will construct this from selection
   token: string;
   owner?: string;
   repo?: string;
   branch?: string;
+}
+
+export interface GitHubUser {
+  login: string;
+  avatar_url: string;
+  html_url: string;
+}
+
+export interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string; // "owner/repo"
+  private: boolean;
+  html_url: string;
+  description: string | null;
+  default_branch: string;
+  updated_at: string;
+  owner: {
+    login: string;
+  }
 }
 
 export interface PullRequestResult {
