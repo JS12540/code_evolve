@@ -220,12 +220,30 @@ function App() {
        // Re-evaluate 'completed' files only if forced? For now, skip.
        if (file.status === 'completed') continue;
 
-       const isAnalyzable = file.language === 'python' || 
-                            file.path.includes('requirements') || 
-                            file.path.includes('lock') || 
-                            file.path.includes('toml');
+       const lowerPath = file.path.toLowerCase();
+       const fileName = lowerPath.split('/').pop() || '';
 
-       if (!isAnalyzable) continue;
+       // Explicitly ignore common non-code/metadata files as requested
+       const isIgnored = 
+          fileName === '.gitignore' || 
+          fileName === 'readme.md' || 
+          fileName === 'license' ||
+          fileName.startsWith('.') || // Hidden files like .env, .DS_Store
+          lowerPath.includes('__pycache__');
+
+       // Check if it's a file we support for analysis (Python or Dependency Managers)
+       const isAnalyzable = file.language === 'python' || 
+                            lowerPath.includes('requirements') || 
+                            lowerPath.includes('lock') || 
+                            lowerPath.includes('toml') || 
+                            lowerPath.includes('pipfile');
+
+       if (isIgnored || !isAnalyzable) {
+         // Mark as completed so it doesn't stay 'pending' in the dashboard
+         // We do not provide a 'result', so it will show as completed with no issues.
+         updateFileStatus(file.path, 'completed'); 
+         continue;
+       }
 
        try {
          updateFileStatus(file.path, 'analyzing');
