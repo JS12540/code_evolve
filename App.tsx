@@ -237,8 +237,11 @@ function App() {
                             lowerPath.includes('lock') || 
                             lowerPath.includes('toml') || 
                             lowerPath.includes('pipfile');
+       
+       // Skip empty files
+       const isEmpty = !file.content || file.content.trim().length === 0;
 
-       if (isIgnored || !isAnalyzable) {
+       if (isIgnored || !isAnalyzable || isEmpty) {
          // Mark as completed so it doesn't stay 'pending' in the dashboard
          // We do not provide a 'result', so it will show as completed with no issues.
          updateFileStatus(file.path, 'completed'); 
