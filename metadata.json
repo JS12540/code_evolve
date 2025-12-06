@@ -1,0 +1,5 @@
+{
+  "name": "CodeEvolve: AI Migration Assistant",
+  "description": "An automated code modernization tool that identifies deprecations, vulnerabilities, and syntax upgrades for Python projects using Gemini AI.",
+  "requestFramePermissions": []
+}
