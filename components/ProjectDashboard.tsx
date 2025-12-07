@@ -12,7 +12,8 @@ import {
   PieChart,
   LayoutDashboard,
   Network,
-  Package
+  Package,
+  StopCircle
 } from 'lucide-react';
 import { buildDependencyGraph } from '../services/dependencyService';
 
@@ -20,8 +21,9 @@ interface ProjectDashboardProps {
   files: ProjectFile[];
   onSelectFile: (path: string) => void;
   isAnalyzing: boolean;
+  onStopAnalysis?: () => void;
   
-  // Dependency Matrix Props (passed down from App)
+  // Dependency Matrix Props
   dependencies?: DependencyItem[];
   onCheckUpdates?: () => void;
   onUpgradeDependency?: (name: string, version: string, files: string[]) => void;
@@ -32,6 +34,7 @@ const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   files, 
   onSelectFile, 
   isAnalyzing,
+  onStopAnalysis,
   dependencies = [],
   onCheckUpdates = () => {},
   onUpgradeDependency = () => {},
@@ -41,8 +44,7 @@ const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
 
   // Aggregate Stats
   const completedFiles = files.filter(f => f.status === 'completed');
-  const pendingFiles = files.filter(f => f.status === 'pending' || f.status === 'analyzing');
-
+  
   let highIssues = 0;
   let mediumIssues = 0;
   let lowIssues = 0;
@@ -74,25 +76,36 @@ const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
             </p>
           </div>
 
-          <div className="flex bg-slate-800 p-1 rounded-lg">
-             <button 
-               onClick={() => setView('stats')}
-               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'stats' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
-             >
-                <PieChart className="w-3.5 h-3.5" /> Stats
-             </button>
-             <button 
-               onClick={() => setView('graph')}
-               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'graph' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
-             >
-                <Network className="w-3.5 h-3.5" /> Graph
-             </button>
-             <button 
-               onClick={() => setView('deps')}
-               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'deps' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
-             >
-                <Package className="w-3.5 h-3.5" /> Dependencies
-             </button>
+          <div className="flex items-center gap-3">
+            {isAnalyzing && onStopAnalysis && (
+              <button 
+                onClick={onStopAnalysis}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-all animate-pulse"
+              >
+                <StopCircle className="w-3.5 h-3.5" /> Stop Analysis
+              </button>
+            )}
+
+            <div className="flex bg-slate-800 p-1 rounded-lg">
+               <button 
+                 onClick={() => setView('stats')}
+                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'stats' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
+               >
+                  <PieChart className="w-3.5 h-3.5" /> Stats
+               </button>
+               <button 
+                 onClick={() => setView('graph')}
+                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'graph' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
+               >
+                  <Network className="w-3.5 h-3.5" /> Graph
+               </button>
+               <button 
+                 onClick={() => setView('deps')}
+                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'deps' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
+               >
+                  <Package className="w-3.5 h-3.5" /> Dependencies
+               </button>
+            </div>
           </div>
         </div>
       </div>

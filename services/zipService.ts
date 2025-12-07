@@ -11,25 +11,53 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
   for (const filename of entries) {
     const fileEntry = loadedZip.files[filename];
     
-    // Skip directories and Mac system files
-    if (fileEntry.dir || filename.includes('__MACOSX') || filename.startsWith('.')) {
+    // Normalize path
+    const path = filename.replace(/\\/g, '/');
+    const segments = path.split('/');
+
+    // 1. Ignore Directories & System Files
+    if (fileEntry.dir || path.includes('__MACOSX') || path.startsWith('.')) {
       continue;
     }
 
-    // Simple extension check to decide if we keep it and how to label it
-    const isPython = filename.endsWith('.py');
-    const isRequirements = filename.endsWith('requirements.txt') || 
-                           filename.endsWith('Pipfile') || 
-                           filename.endsWith('pyproject.toml') ||
-                           filename.endsWith('uv.lock') ||
-                           filename.endsWith('poetry.lock');
+    // 2. Ignore Virtual Environments and Metadata
+    const isIgnored = segments.some(seg => 
+      seg === 'venv' || 
+      seg === '.venv' || 
+      seg === 'env' || 
+      seg === '.git' || 
+      seg === '.idea' || 
+      seg === '.vscode' || 
+      seg === '__pycache__' ||
+      seg === 'node_modules' ||
+      seg === 'dist' ||
+      seg === 'build' ||
+      seg.endsWith('.egg-info')
+    );
+
+    if (isIgnored) continue;
+
+    // 3. Filter for Text/Code Files
+    const isPython = path.endsWith('.py');
+    const isConfig = path.endsWith('requirements.txt') || 
+                     path.endsWith('Pipfile') || 
+                     path.endsWith('pyproject.toml') ||
+                     path.endsWith('uv.lock') ||
+                     path.endsWith('poetry.lock');
                            
-    const isText = isPython || isRequirements || filename.endsWith('.txt') || filename.endsWith('.md') || filename.endsWith('.json') || filename.endsWith('.yaml') || filename.endsWith('.yml');
+    const isText = isPython || isConfig || 
+                   path.endsWith('.txt') || 
+                   path.endsWith('.md') || 
+                   path.endsWith('.json') || 
+                   path.endsWith('.yaml') || 
+                   path.endsWith('.yml') ||
+                   path.endsWith('.ini') ||
+                   path.endsWith('.dockerfile');
 
     if (isText) {
       const content = await fileEntry.async('string');
       files.push({
-        path: filename,
+        path: path,
         content: content,
         language: isPython ? 'python' : 'text',
         status: 'pending'
@@ -37,12 +65,12 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
     }
   }
 
-  // Sort files: requirements first, then python files, then others
+  // Sort: Configs -> Python -> Others
   return files.sort((a, b) => {
     const getScore = (f: ProjectFile) => {
-      const path = f.path.toLowerCase();
-      if (path.includes('requirements.txt') || path.includes('pyproject.toml') || path.includes('lock')) return 0;
-      if (path.endsWith('.py')) return 1;
+      const p = f.path.toLowerCase();
+      if (p.includes('requirements.txt') || p.includes('pyproject.toml')) return 0;
+      if (p.endsWith('.py')) return 1;
       return 2;
     };
     return getScore(a) - getScore(b);

@@ -67,27 +67,46 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
   const validEntries = treeData.tree.filter((node: any) => {
     if (node.type !== 'blob') return false;
     
-    const path = node.path.toLowerCase();
+    const path = node.path; // Keep original case for display, compare with lower
+    const lowerPath = path.toLowerCase();
+    const segments = lowerPath.split('/');
+
+    // Ignore Ignore Virtual Environments and Metadata
+    const isIgnored = segments.some((seg: string) => 
+      seg === 'venv' || 
+      seg === '.venv' || 
+      seg === 'env' || 
+      seg === '.git' || 
+      seg === '.idea' || 
+      seg === '.vscode' || 
+      seg === '__pycache__' ||
+      seg === 'node_modules' ||
+      seg.endsWith('.egg-info')
+    );
+
+    if (isIgnored) return false;
+
     // Allow a wide range of code and config files
     return (
-      path.endsWith('.py') || 
-      path.includes('requirements') || 
-      path.includes('lock') || 
-      path.includes('toml') ||
-      path.endsWith('.md') ||
-      path.endsWith('.json') ||
-      path.endsWith('.js') ||
-      path.endsWith('.ts') ||
-      path.endsWith('.tsx') ||
-      path.endsWith('.jsx') ||
-      path.endsWith('.html') ||
-      path.endsWith('.css') ||
-      path.endsWith('.yaml') ||
-      path.endsWith('.yml') ||
-      path.endsWith('.dockerfile') ||
-      path.endsWith('.gitignore')
+      lowerPath.endsWith('.py') || 
+      lowerPath.includes('requirements') || 
+      lowerPath.includes('lock') || 
+      lowerPath.includes('toml') ||
+      lowerPath.includes('pipfile') ||
+      lowerPath.endsWith('.md') ||
+      lowerPath.endsWith('.json') ||
+      lowerPath.endsWith('.js') ||
+      lowerPath.endsWith('.ts') ||
+      lowerPath.endsWith('.tsx') ||
+      lowerPath.endsWith('.jsx') ||
+      lowerPath.endsWith('.html') ||
+      lowerPath.endsWith('.css') ||
+      lowerPath.endsWith('.yaml') ||
+      lowerPath.endsWith('.yml') ||
+      lowerPath.endsWith('.dockerfile') ||
+      lowerPath.endsWith('.gitignore')
     );
-  }).slice(0, 100); // Limit to 100 files to avoid rate limits
+  }).slice(0, 150); // Increased limit slightly
 
   // 4. Fetch blobs in Parallel
   const filePromises = validEntries.map(async (entry: any) => {
@@ -100,7 +119,7 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
       const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
       
       return {
-        path: entry.path,
+        path: entry.path, // This path usually comes clean from GitHub "src/main.py"
         content: content,
         language: entry.path.endsWith('.py') ? 'python' : 'text',
         status: 'pending'

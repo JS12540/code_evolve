@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import Editor from './components/Editor';
 import ChangeLog from './components/ChangeLog';
@@ -33,7 +33,8 @@ import {
   Bot,
   TestTube2,
   GitCompare,
-  MessageSquare
+  PanelLeftClose,
+  PanelLeftOpen
 } from 'lucide-react';
 
 const INITIAL_CODE_EXAMPLE = `# Legacy Python Example
@@ -74,6 +75,10 @@ function App() {
   const [targetVersion, setTargetVersion] = useState<TargetVersion>(TargetVersion.PY_3_12);
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  
+  // Analysis Abort Controller
+  const abortControllerRef = useRef<AbortController | null>(null);
   
   // Dependency State
   const [dependencies, setDependencies] = useState<DependencyItem[]>([]);
@@ -264,7 +269,23 @@ function App() {
     ));
   };
 
+  const handleStopAnalysis = () => {
+    if (abortControllerRef.current) {
+       abortControllerRef.current.abort();
+       abortControllerRef.current = null;
+       setIsProjectAnalyzing(false);
+       setGlobalError("Analysis stopped by user.");
+    }
+  };
+
   const runBatchAnalysis = async (filesToProcess: ProjectFile[]) => {
+    // Abort any existing process
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+
     setIsProjectAnalyzing(true);
     
     const filesToAnalyze: ProjectFile[] = [];
@@ -275,11 +296,14 @@ function App() {
        const lowerPath = file.path.toLowerCase();
        const fileName = lowerPath.split('/').pop() || '';
 
+       // Extra safety check in case backend filters missed something
        const isIgnored = 
           fileName === '.gitignore' || 
           fileName === 'readme.md' || 
           fileName === 'license' ||
           fileName.startsWith('.') || 
+          lowerPath.includes('venv') ||
+          lowerPath.includes('env/') ||
           lowerPath.includes('__pycache__');
 
        const isAnalyzable = file.language === 'python' || 
@@ -297,19 +321,27 @@ function App() {
        }
     }
 
-    const CONCURRENCY_LIMIT = 4;
+    // REDUCED CONCURRENCY to avoid Rate Limits
+    const CONCURRENCY_LIMIT = 2;
     const queue = [...filesToAnalyze];
     
     const analyzeWorker = async () => {
         while (queue.length > 0) {
+            if (signal.aborted) return;
+
             const file = queue.shift();
             if (!file) break;
             
+            // Add a small delay between requests to be nice to the API
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
             try {
                 updateFileStatus(file.path, 'analyzing');
                 const result = await analyzeCode(file.content, file.path, targetVersion);
+                if (signal.aborted) return;
                 updateFileStatus(file.path, 'completed', result);
             } catch (err: any) {
+                if (signal.aborted) return;
                 console.error(`Error analyzing ${file.path}:`, err);
                 updateFileStatus(file.path, 'error');
             }
@@ -322,7 +354,9 @@ function App() {
 
     await Promise.all(workers);
     
-    setIsProjectAnalyzing(false);
+    if (!signal.aborted) {
+       setIsProjectAnalyzing(false);
+    }
   };
 
   const handleManualAnalyze = async () => {
@@ -382,32 +416,22 @@ function App() {
   };
 
   const handleChatMessage = async (text: string) => {
-    // If no file selected (Dashboard mode), we assume global project query?
-    // For MVP, we'll try to use the "selectedFilePath" if available, else warn or use a dummy context.
     const activeFile = selectedFile || files[0]; // fallback
     if (!activeFile) return;
 
     setIsChatLoading(true);
     
-    // Create new history entry
     const newHistory: ChatMessage[] = [
       ...(activeFile.chatHistory || []),
       { role: 'user', text, timestamp: Date.now() }
     ];
 
-    // Optimistic UI update
     setFiles(prev => prev.map(f => 
       f.path === activeFile.path ? { ...f, chatHistory: newHistory } : f
     ));
 
     try {
       const projectContext = files.map(f => f.path).join('\n');
-      
-      // Use refactoredCode if available, else content.
-      // If we are in Dashboard mode (no selectedFile), we might be chatting about the project. 
-      // Current Chat implementation assumes a single file context for "Refactoring".
-      // We will simply pass "Project Summary" as code if none exists.
-      
       const currentCode = activeFile.result?.refactoredCode || activeFile.content;
 
       const { code, reply } = await chatRefinement(
@@ -425,7 +449,6 @@ function App() {
         f.path === activeFile.path ? { 
           ...f, 
           chatHistory: updatedHistory,
-          // Only update result code if we actually got code back
           result: { 
              ...f.result!, 
              refactoredCode: code || f.result?.refactoredCode || f.content,
@@ -469,29 +492,23 @@ function App() {
   };
 
   const handleUpgradeDependency = async (pkgName: string, newVersion: string, dependentFiles: string[]) => {
-    // Find which file to update
     const dep = dependencies.find(d => d.name === pkgName);
     if (!dep || !dep.sourceFile) return;
 
     const sourceFile = files.find(f => f.path === dep.sourceFile);
     if (!sourceFile) return;
 
-    // Simple Regex replacement logic
     let newContent = sourceFile.content;
-    const escapedName = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // escape regex chars
+    const escapedName = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); 
     
-    // Heuristics based on file type
     if (sourceFile.path.endsWith('.txt')) {
-       // requirements.txt: name==version
        const regex = new RegExp(`^${escapedName}([=<>!~]+.*)?$`, 'm');
        newContent = sourceFile.content.replace(regex, `${pkgName}==${newVersion}`);
     } else if (sourceFile.path.endsWith('.toml')) {
-       // pyproject.toml: name = "version"
        const regex = new RegExp(`^"?${escapedName}"?\\s*=\s*".*"`, 'm');
        if (regex.test(sourceFile.content)) {
          newContent = sourceFile.content.replace(regex, `${pkgName} = "${newVersion}"`);
        } else {
-         // Poetry style?
          const poetryRegex = new RegExp(`^${escapedName}\\s*=\s*".*"`, 'm');
          newContent = sourceFile.content.replace(poetryRegex, `${pkgName} = "${newVersion}"`);
        }
@@ -532,200 +549,216 @@ function App() {
       <main className="flex-1 flex overflow-hidden relative">
         
         {/* Sidebar */}
-        <aside className="w-80 border-r border-slate-700 bg-surface flex flex-col flex-shrink-0 z-20">
-          {/* Source Toggle */}
-          <div className="p-4 border-b border-slate-700 bg-slate-900/30">
-             <div className="flex bg-slate-800 p-1 rounded-lg mb-4">
-                <button 
-                  onClick={() => setSourceMode('upload')}
-                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'upload' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
-                >
-                  Upload ZIP
-                </button>
-                <button 
-                  onClick={() => setSourceMode('github')}
-                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'github' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
-                >
-                  GitHub
-                </button>
-             </div>
-
-             {sourceMode === 'upload' ? (
-                <div className="relative group">
-                  <input 
-                    type="file" 
-                    accept=".zip,.py,.txt,.md" 
-                    onChange={handleFileUpload} 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <button className="w-full flex items-center justify-center gap-2 px-4 py-8 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-700 hover:border-slate-500 rounded-lg text-sm transition-all group-hover:text-white">
-                    <Upload className="w-5 h-5 mb-1" />
-                    <span className="text-xs">Click to Upload ZIP</span>
+        <div className={`
+           relative border-r border-slate-700 bg-surface flex flex-col flex-shrink-0 z-20 transition-all duration-300 ease-in-out
+           ${isSidebarCollapsed ? 'w-0 opacity-0 overflow-hidden' : 'w-80 opacity-100'}
+        `}>
+          {/* Sidebar Content */}
+          <aside className="w-80 flex flex-col h-full">
+            {/* Source Toggle */}
+            <div className="p-4 border-b border-slate-700 bg-slate-900/30">
+               <div className="flex bg-slate-800 p-1 rounded-lg mb-4">
+                  <button 
+                    onClick={() => setSourceMode('upload')}
+                    className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'upload' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Upload ZIP
                   </button>
-                </div>
-             ) : (
-                <div className="space-y-3">
-                   {!githubUser ? (
-                     <GitHubAuth onLogin={handleGithubLogin} isLoading={isGithubLoading} />
-                   ) : (
-                     <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
-                        {/* User Profile Card */}
-                        <div className="flex items-center justify-between bg-slate-800/50 p-2.5 rounded-lg border border-slate-700">
-                          <div className="flex items-center gap-2.5 overflow-hidden">
-                             {githubUser.avatar_url ? (
-                               <img src={githubUser.avatar_url} alt="Profile" className="w-8 h-8 rounded-full border border-slate-600" />
-                             ) : (
-                               <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                                 <span className="text-xs font-bold text-primary">{githubUser.login.substring(0, 2).toUpperCase()}</span>
+                  <button 
+                    onClick={() => setSourceMode('github')}
+                    className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'github' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    GitHub
+                  </button>
+               </div>
+
+               {sourceMode === 'upload' ? (
+                  <div className="relative group">
+                    <input 
+                      type="file" 
+                      accept=".zip,.py,.txt,.md" 
+                      onChange={handleFileUpload} 
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                    <button className="w-full flex items-center justify-center gap-2 px-4 py-8 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-700 hover:border-slate-500 rounded-lg text-sm transition-all group-hover:text-white">
+                      <Upload className="w-5 h-5 mb-1" />
+                      <span className="text-xs">Click to Upload ZIP</span>
+                    </button>
+                  </div>
+               ) : (
+                  <div className="space-y-3">
+                     {!githubUser ? (
+                       <GitHubAuth onLogin={handleGithubLogin} isLoading={isGithubLoading} />
+                     ) : (
+                       <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
+                          {/* User Profile Card */}
+                          <div className="flex items-center justify-between bg-slate-800/50 p-2.5 rounded-lg border border-slate-700">
+                            <div className="flex items-center gap-2.5 overflow-hidden">
+                               {githubUser.avatar_url ? (
+                                 <img src={githubUser.avatar_url} alt="Profile" className="w-8 h-8 rounded-full border border-slate-600" />
+                               ) : (
+                                 <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                                   <span className="text-xs font-bold text-primary">{githubUser.login.substring(0, 2).toUpperCase()}</span>
+                                 </div>
+                               )}
+                               <div className="flex flex-col min-w-0">
+                                 <span className="text-xs font-bold text-slate-200 truncate">@{githubUser.login}</span>
+                                 <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                                   Connected
+                                 </span>
                                </div>
-                             )}
-                             <div className="flex flex-col min-w-0">
-                               <span className="text-xs font-bold text-slate-200 truncate">@{githubUser.login}</span>
-                               <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
-                                 Connected
-                               </span>
-                             </div>
+                            </div>
+                            <button 
+                              onClick={handleDisconnectGithub} 
+                              className="text-slate-500 hover:text-red-400 p-1.5 hover:bg-slate-700 rounded transition-colors" 
+                              title="Disconnect Account"
+                            >
+                              <LogOut className="w-4 h-4" />
+                            </button>
                           </div>
+
+                          {/* Repo Search */}
+                          <div>
+                            <label className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 block flex items-center justify-between">
+                              <span>Select Repository</span>
+                              <span className="text-slate-600 font-normal">{githubRepos.length} found</span>
+                            </label>
+                            <div className="relative mb-2">
+                               <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
+                               <input 
+                                  type="text"
+                                  placeholder="Search repositories..."
+                                  value={repoSearch}
+                                  onChange={e => setRepoSearch(e.target.value)}
+                                  className="w-full bg-slate-800 border border-slate-700 rounded-md pl-8 pr-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none placeholder-slate-600 text-slate-200"
+                               />
+                            </div>
+                            
+                            {/* Repo List */}
+                            <div className="h-48 overflow-y-auto border border-slate-700 rounded-md bg-slate-900/20 custom-scrollbar">
+                               {filteredRepos.length === 0 ? (
+                                  <div className="flex flex-col items-center justify-center h-full p-4 text-center text-[10px] text-slate-500">
+                                     {isGithubLoading ? <Loader2 className="w-5 h-5 animate-spin mb-2" /> : "No repositories found."}
+                                  </div>
+                               ) : (
+                                  filteredRepos.map(repo => (
+                                    <button
+                                      key={repo.id}
+                                      onClick={() => setSelectedRepoFullName(repo.full_name)}
+                                      className={`w-full text-left px-3 py-2.5 text-xs border-b border-slate-700/30 last:border-0 hover:bg-slate-700/50 transition-colors flex items-center justify-between group ${selectedRepoFullName === repo.full_name ? 'bg-primary/20 text-white' : 'text-slate-300'}`}
+                                    >
+                                      <div className="flex items-center gap-2 truncate">
+                                        {repo.private ? (
+                                          <Lock className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-amber-400' : 'text-slate-500 group-hover:text-amber-400'}`} />
+                                        ) : (
+                                          <Globe className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-primary' : 'text-slate-500 group-hover:text-primary'}`} />
+                                        )}
+                                        <span className="truncate">{repo.name}</span>
+                                      </div>
+                                      <span className="text-[10px] text-slate-500 flex-shrink-0 ml-2 bg-slate-800 px-1.5 py-0.5 rounded">
+                                        {repo.owner.login}
+                                      </span>
+                                    </button>
+                                  ))
+                               )}
+                            </div>
+                          </div>
+
                           <button 
-                            onClick={handleDisconnectGithub} 
-                            className="text-slate-500 hover:text-red-400 p-1.5 hover:bg-slate-700 rounded transition-colors" 
-                            title="Disconnect Account"
+                              onClick={handleImportRepo}
+                              disabled={!selectedRepoFullName || isGithubLoading}
+                              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
                           >
-                            <LogOut className="w-4 h-4" />
+                              {isGithubLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                              Import Project
                           </button>
-                        </div>
+                       </div>
+                     )}
+                  </div>
+               )}
+            </div>
+            
+            <div className="flex-1 min-h-0">
+              <FileTree 
+                files={files} 
+                selectedFile={selectedFile || null} 
+                selectedPath={selectedFilePath}
+                onSelect={(path) => {
+                  setSelectedFilePath(path);
+                  if (path !== PROJECT_ROOT_ID) {
+                     const f = files.find(f => f.path === path);
+                     if (f?.status === 'completed') setActiveTab('code');
+                  }
+                }} 
+              />
+            </div>
 
-                        {/* Repo Search */}
-                        <div>
-                          <label className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 block flex items-center justify-between">
-                            <span>Select Repository</span>
-                            <span className="text-slate-600 font-normal">{githubRepos.length} found</span>
-                          </label>
-                          <div className="relative mb-2">
-                             <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
-                             <input 
-                                type="text"
-                                placeholder="Search repositories..."
-                                value={repoSearch}
-                                onChange={e => setRepoSearch(e.target.value)}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-md pl-8 pr-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none placeholder-slate-600 text-slate-200"
-                             />
-                          </div>
-                          
-                          {/* Repo List */}
-                          <div className="h-48 overflow-y-auto border border-slate-700 rounded-md bg-slate-900/20 custom-scrollbar">
-                             {filteredRepos.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-full p-4 text-center text-[10px] text-slate-500">
-                                   {isGithubLoading ? <Loader2 className="w-5 h-5 animate-spin mb-2" /> : "No repositories found."}
-                                </div>
-                             ) : (
-                                filteredRepos.map(repo => (
-                                  <button
-                                    key={repo.id}
-                                    onClick={() => setSelectedRepoFullName(repo.full_name)}
-                                    className={`w-full text-left px-3 py-2.5 text-xs border-b border-slate-700/30 last:border-0 hover:bg-slate-700/50 transition-colors flex items-center justify-between group ${selectedRepoFullName === repo.full_name ? 'bg-primary/20 text-white' : 'text-slate-300'}`}
-                                  >
-                                    <div className="flex items-center gap-2 truncate">
-                                      {repo.private ? (
-                                        <Lock className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-amber-400' : 'text-slate-500 group-hover:text-amber-400'}`} />
-                                      ) : (
-                                        <Globe className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-primary' : 'text-slate-500 group-hover:text-primary'}`} />
-                                      )}
-                                      <span className="truncate">{repo.name}</span>
-                                    </div>
-                                    <span className="text-[10px] text-slate-500 flex-shrink-0 ml-2 bg-slate-800 px-1.5 py-0.5 rounded">
-                                      {repo.owner.login}
-                                    </span>
-                                  </button>
-                                ))
-                             )}
-                          </div>
-                        </div>
+            {/* Action Footer */}
+            <div className="p-4 border-t border-slate-700 bg-slate-900/50 space-y-2">
+               <div className="grid grid-cols-2 gap-2">
+                 <button
+                    onClick={() => createAndDownloadZip(files)}
+                    disabled={files.length === 0}
+                    className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
+                    title="Download Code as ZIP"
+                 >
+                    <Download className="w-3 h-3" /> ZIP
+                 </button>
+                 <button
+                    onClick={() => generateMigrationReport(files)}
+                    disabled={files.length === 0}
+                    className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
+                    title="Download Report as PDF"
+                 >
+                    <FileText className="w-3 h-3" /> PDF
+                 </button>
+               </div>
 
-                        <button 
-                            onClick={handleImportRepo}
-                            disabled={!selectedRepoFullName || isGithubLoading}
-                            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
-                        >
-                            {isGithubLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                            Import Project
-                        </button>
-                     </div>
-                   )}
-                </div>
-             )}
-          </div>
-          
-          <div className="flex-1 min-h-0">
-            <FileTree 
-              files={files} 
-              selectedFile={selectedFile || null} 
-              selectedPath={selectedFilePath}
-              onSelect={(path) => {
-                setSelectedFilePath(path);
-                if (path !== PROJECT_ROOT_ID) {
-                   const f = files.find(f => f.path === path);
-                   if (f?.status === 'completed') setActiveTab('code');
-                }
-              }} 
-            />
-          </div>
+               {sourceMode === 'github' && githubUser && (
+                  <button
+                    onClick={handleCreatePR}
+                    disabled={prStatus?.loading || isProjectAnalyzing || !selectedRepoFullName || filesChangedCount === 0}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                     {prStatus?.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GitPullRequest className="w-3.5 h-3.5" />}
+                     {filesChangedCount > 0 ? `Create PR (${filesChangedCount} files)` : 'Create Pull Request'}
+                  </button>
+               )}
+               
+               {prStatus?.url && (
+                  <a href={prStatus.url} target="_blank" rel="noreferrer" className="block text-center text-[10px] text-emerald-400 hover:underline bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20">
+                    <span className="flex items-center justify-center gap-1">
+                      <Check className="w-3 h-3" /> PR Created Successfully
+                    </span>
+                  </a>
+               )}
+               {prStatus?.error && (
+                  <div className="text-[10px] text-red-400 text-center px-1 break-words bg-red-500/10 p-1.5 rounded border border-red-500/20">
+                     Error: {prStatus.error}
+                  </div>
+               )}
+            </div>
+          </aside>
+        </div>
 
-          {/* Action Footer */}
-          <div className="p-4 border-t border-slate-700 bg-slate-900/50 space-y-2">
-             <div className="grid grid-cols-2 gap-2">
-               <button
-                  onClick={() => createAndDownloadZip(files)}
-                  disabled={files.length === 0}
-                  className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
-                  title="Download Code as ZIP"
-               >
-                  <Download className="w-3 h-3" /> ZIP
-               </button>
-               <button
-                  onClick={() => generateMigrationReport(files)}
-                  disabled={files.length === 0}
-                  className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
-                  title="Download Report as PDF"
-               >
-                  <FileText className="w-3 h-3" /> PDF
-               </button>
-             </div>
-
-             {sourceMode === 'github' && githubUser && (
-                <button
-                  onClick={handleCreatePR}
-                  disabled={prStatus?.loading || isProjectAnalyzing || !selectedRepoFullName || filesChangedCount === 0}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
-                >
-                   {prStatus?.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GitPullRequest className="w-3.5 h-3.5" />}
-                   {filesChangedCount > 0 ? `Create PR (${filesChangedCount} files)` : 'Create Pull Request'}
-                </button>
-             )}
-             
-             {prStatus?.url && (
-                <a href={prStatus.url} target="_blank" rel="noreferrer" className="block text-center text-[10px] text-emerald-400 hover:underline bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20">
-                  <span className="flex items-center justify-center gap-1">
-                    <Check className="w-3 h-3" /> PR Created Successfully
-                  </span>
-                </a>
-             )}
-             {prStatus?.error && (
-                <div className="text-[10px] text-red-400 text-center px-1 break-words bg-red-500/10 p-1.5 rounded border border-red-500/20">
-                   Error: {prStatus.error}
-                </div>
-             )}
-          </div>
-        </aside>
+        {/* Sidebar Toggle Button (Visible when collapsed OR expanded for easy toggling) */}
+        <button
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-30 p-1 bg-slate-800 border border-slate-600 rounded-r-md text-slate-400 hover:text-white shadow-lg transform transition-transform hover:scale-110"
+            style={{ left: isSidebarCollapsed ? 0 : '20rem' }}
+        >
+            {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+        </button>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 bg-background relative z-10">
+        <div className="flex-1 flex flex-col min-w-0 bg-background relative z-10 transition-all duration-300">
           
           {selectedFilePath === PROJECT_ROOT_ID ? (
              <ProjectDashboard 
                files={files} 
                isAnalyzing={isProjectAnalyzing}
+               onStopAnalysis={handleStopAnalysis}
                onSelectFile={setSelectedFilePath}
                dependencies={dependencies}
                onCheckUpdates={handleCheckUpdates}

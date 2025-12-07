@@ -3,6 +3,32 @@ import { MigrationResult, TargetVersion, ChangeType, Severity, Reference, ChatMe
 
 const apiKey = process.env.API_KEY || '';
 
+// Helper for delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Generic Retry Wrapper for API calls
+async function callWithRetry<T>(fn: () => Promise<T>, retries = 3, baseDelay = 2000): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isRateLimit = error.status === 429 || 
+                          error.code === 429 || 
+                          error.message?.includes('429') || 
+                          error.status === 'RESOURCE_EXHAUSTED';
+
+      if (isRateLimit && i < retries - 1) {
+        const waitTime = baseDelay * Math.pow(2, i) + (Math.random() * 1000); // Exponential backoff + jitter
+        console.warn(`Gemini Rate Limit hit. Retrying in ${Math.round(waitTime)}ms... (Attempt ${i + 1}/${retries})`);
+        await delay(waitTime);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Max retries reached");
+}
+
 export const analyzeCode = async (
   code: string,
   filename: string,
@@ -84,7 +110,7 @@ export const analyzeCode = async (
     }
   `;
 
-  try {
+  return callWithRetry(async () => {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash", 
       contents: [
@@ -144,11 +170,7 @@ export const analyzeCode = async (
     result.references = uniqueRefs;
 
     return result;
-
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    throw error;
-  }
+  });
 };
 
 export const generateUnitTests = async (
@@ -175,13 +197,15 @@ export const generateUnitTests = async (
     - Return ONLY the raw python code for the test file. Do not wrap in markdown code blocks if possible, or I will strip them.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { temperature: 0.2 }
-  });
+  return callWithRetry(async () => {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: { temperature: 0.2 }
+    });
 
-  return (response.text || "").replace(/```python/g, '').replace(/```/g, '').trim();
+    return (response.text || "").replace(/```python/g, '').replace(/```/g, '').trim();
+  });
 };
 
 export const chatRefinement = async (
@@ -235,24 +259,26 @@ export const chatRefinement = async (
     ${newMessage}
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      ...historyParts as any,
-      { role: "user", parts: [{ text: prompt }] }
-    ],
-    config: {
-      systemInstruction,
-      responseMimeType: "application/json"
+  return callWithRetry(async () => {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        ...historyParts as any,
+        { role: "user", parts: [{ text: prompt }] }
+      ],
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json"
+      }
+    });
+
+    const responseText = response.text || "{}";
+    try {
+      return JSON.parse(responseText);
+    } catch (e) {
+      return { code: currentCode, reply: "I'm sorry, I couldn't process that request correctly." };
     }
   });
-
-  const responseText = response.text || "{}";
-  try {
-    return JSON.parse(responseText);
-  } catch (e) {
-    return { code: currentCode, reply: "I'm sorry, I couldn't process that request correctly." };
-  }
 };
 
 export const auditDependencyVersions = async (
@@ -287,33 +313,35 @@ export const auditDependencyVersions = async (
     ]
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: {
-      tools: [{ googleSearch: {} }],
-      temperature: 0.1 // strict parsing
+  return callWithRetry(async () => {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0.1 // strict parsing
+      }
+    });
+
+    const responseText = response.text || "[]";
+    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+    try {
+      const items = JSON.parse(cleanJson);
+      return items.map((item: any) => ({
+        name: item.name,
+        currentVersion: item.currentVersion,
+        latestVersion: item.latestVersion,
+        status: item.status
+      }));
+    } catch (e) {
+      console.error("Failed to parse dependency audit", e);
+      return packages.map(p => ({
+        name: p.name,
+        currentVersion: p.currentVersion,
+        latestVersion: '?',
+        status: 'unknown' as const
+      }));
     }
   });
-
-  const responseText = response.text || "[]";
-  const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-  try {
-    const items = JSON.parse(cleanJson);
-    return items.map((item: any) => ({
-      name: item.name,
-      currentVersion: item.currentVersion,
-      latestVersion: item.latestVersion,
-      status: item.status
-    }));
-  } catch (e) {
-    console.error("Failed to parse dependency audit", e);
-    return packages.map(p => ({
-      name: p.name,
-      currentVersion: p.currentVersion,
-      latestVersion: '?',
-      status: 'unknown' as const
-    }));
-  }
 };
