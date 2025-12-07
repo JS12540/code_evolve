@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { ProjectFile, Severity, DependencyGraphData } from '../types';
+import { ProjectFile, Severity, DependencyGraphData, DependencyItem } from '../types';
 import DependencyGraph from './DependencyGraph';
+import DependencyMatrix from './DependencyMatrix';
 import { 
   CheckCircle2, 
   AlertTriangle, 
@@ -10,7 +11,8 @@ import {
   Loader2,
   PieChart,
   LayoutDashboard,
-  Network
+  Network,
+  Package
 } from 'lucide-react';
 import { buildDependencyGraph } from '../services/dependencyService';
 
@@ -18,10 +20,24 @@ interface ProjectDashboardProps {
   files: ProjectFile[];
   onSelectFile: (path: string) => void;
   isAnalyzing: boolean;
+  
+  // Dependency Matrix Props (passed down from App)
+  dependencies?: DependencyItem[];
+  onCheckUpdates?: () => void;
+  onUpgradeDependency?: (name: string, version: string, files: string[]) => void;
+  isCheckingUpdates?: boolean;
 }
 
-const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ files, onSelectFile, isAnalyzing }) => {
-  const [view, setView] = useState<'stats' | 'graph'>('stats');
+const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ 
+  files, 
+  onSelectFile, 
+  isAnalyzing,
+  dependencies = [],
+  onCheckUpdates = () => {},
+  onUpgradeDependency = () => {},
+  isCheckingUpdates = false
+}) => {
+  const [view, setView] = useState<'stats' | 'graph' | 'deps'>('stats');
 
   // Aggregate Stats
   const completedFiles = files.filter(f => f.status === 'completed');
@@ -71,14 +87,29 @@ const ProjectDashboard: React.FC<ProjectDashboardProps> = ({ files, onSelectFile
              >
                 <Network className="w-3.5 h-3.5" /> Graph
              </button>
+             <button 
+               onClick={() => setView('deps')}
+               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'deps' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-white'}`}
+             >
+                <Package className="w-3.5 h-3.5" /> Dependencies
+             </button>
           </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-hidden relative">
-        {view === 'graph' ? (
-           <DependencyGraph data={graphData} />
-        ) : (
+        {view === 'graph' && <DependencyGraph data={graphData} />}
+        
+        {view === 'deps' && (
+          <DependencyMatrix 
+            dependencies={dependencies} 
+            onCheckUpdates={onCheckUpdates} 
+            onUpgrade={onUpgradeDependency}
+            isLoading={isCheckingUpdates}
+          />
+        )}
+
+        {view === 'stats' && (
           <div className="h-full overflow-y-auto p-6 custom-scrollbar">
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">

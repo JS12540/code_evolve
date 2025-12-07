@@ -110,3 +110,12 @@ export interface DependencyGraphData {
   nodes: GraphNode[];
   links: GraphLink[];
 }
+
+export interface DependencyItem {
+  name: string;
+  currentVersion: string;
+  latestVersion?: string;
+  usageCount: number;
+  usedInFiles: string[]; // paths
+  status: 'up-to-date' | 'outdated' | 'unknown';
+}

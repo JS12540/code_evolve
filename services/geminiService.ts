@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { MigrationResult, TargetVersion, ChangeType, Severity, Reference, ChatMessage } from "../types";
+import { MigrationResult, TargetVersion, ChangeType, Severity, Reference, ChatMessage, DependencyItem } from "../types";
 
 const apiKey = process.env.API_KEY || '';
 
@@ -243,5 +243,69 @@ export const chatRefinement = async (
     return JSON.parse(responseText);
   } catch (e) {
     return { code: currentCode, reply: "I'm sorry, I couldn't process that request correctly." };
+  }
+};
+
+export const auditDependencyVersions = async (
+  packages: { name: string, currentVersion: string }[]
+): Promise<DependencyItem[]> => {
+  if (!apiKey) throw new Error("API Key is missing.");
+  const ai = new GoogleGenAI({ apiKey });
+
+  if (packages.length === 0) return [];
+
+  // Construct a prompt to check all packages at once
+  const packageList = packages.map(p => `${p.name} (Current: ${p.currentVersion})`).join('\n');
+
+  const prompt = `
+    I have the following Python packages and their current versions:
+    ${packageList}
+
+    Task:
+    1. For each package, SEARCH for the latest stable version on PyPI.
+    2. Compare the current version with the latest.
+    3. Return a JSON array of objects.
+    
+    Output JSON Format:
+    [
+      {
+        "name": "package_name",
+        "currentVersion": "current_version_string",
+        "latestVersion": "latest_version_string",
+        "status": "outdated" | "up-to-date" | "unknown"
+      },
+      ...
+    ]
+  `;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    config: {
+      tools: [{ googleSearch: {} }],
+      temperature: 0.1 // strict parsing
+    }
+  });
+
+  const responseText = response.text || "[]";
+  const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+  try {
+    const items = JSON.parse(cleanJson);
+    return items.map((item: any) => ({
+      ...item,
+      usageCount: 0,
+      usedInFiles: []
+    }));
+  } catch (e) {
+    console.error("Failed to parse dependency audit", e);
+    return packages.map(p => ({
+      name: p.name,
+      currentVersion: p.currentVersion,
+      latestVersion: '?',
+      status: 'unknown',
+      usageCount: 0,
+      usedInFiles: []
+    }));
   }
 };

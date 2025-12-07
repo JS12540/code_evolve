@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Header from './components/Header';
 import Editor from './components/Editor';
 import ChangeLog from './components/ChangeLog';
@@ -7,11 +7,12 @@ import GitHubAuth from './components/GitHubAuth';
 import ProjectDashboard from './components/ProjectDashboard';
 import DiffViewer from './components/DiffViewer';
 import ChatPanel from './components/ChatPanel';
-import { analyzeCode, generateUnitTests, chatRefinement } from './services/geminiService';
+import { analyzeCode, generateUnitTests, chatRefinement, auditDependencyVersions } from './services/geminiService';
 import { extractZip, createAndDownloadZip } from './services/zipService';
 import { fetchRepoContents, createPullRequest, fetchUserRepos } from './services/githubService';
+import { parseRequirements, mapPackagesToFiles } from './services/dependencyService';
 import { generateMigrationReport } from './services/pdfService';
-import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo, ChatMessage } from './types';
+import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo, ChatMessage, DependencyItem } from './types';
 import { 
   Upload, 
   AlertCircle, 
@@ -74,6 +75,10 @@ function App() {
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   
+  // Dependency State
+  const [dependencies, setDependencies] = useState<DependencyItem[]>([]);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+
   // Modes & Config
   const [sourceMode, setSourceMode] = useState<SourceMode>('upload');
   
@@ -95,6 +100,32 @@ function App() {
 
   const selectedFile = files.find(f => f.path === selectedFilePath);
 
+  // Parse initial dependencies when files change
+  useEffect(() => {
+    const reqFile = files.find(f => f.path.endsWith('requirements.txt'));
+    if (reqFile) {
+        // Only parse if we haven't done it or if content changed significantly
+        // For MVP we just parse on file load.
+        // If we already have dependencies populated with "latestVersion" logic, try to preserve it
+        // But for simplicity, we just rebuild from content and reset
+        const parsed = parseRequirements(reqFile.content);
+        const fileMap = mapPackagesToFiles(files, parsed.map(p => p.name));
+        
+        const newDeps: DependencyItem[] = parsed.map(p => {
+             const existing = dependencies.find(d => d.name === p.name);
+             return {
+                 name: p.name,
+                 currentVersion: p.version,
+                 latestVersion: existing?.latestVersion, // preserve if exists
+                 status: existing?.status || 'unknown',
+                 usageCount: fileMap[p.name]?.length || 0,
+                 usedInFiles: fileMap[p.name] || []
+             };
+        });
+        setDependencies(newDeps);
+    }
+  }, [files.length]); // Dependency check logic simplified to file count for MVP trigger
+
   // Filter repos based on search
   const filteredRepos = useMemo(() => {
     if (!repoSearch) return githubRepos;
@@ -107,6 +138,7 @@ function App() {
 
     setGlobalError(null);
     setIsProjectAnalyzing(true);
+    setDependencies([]);
 
     try {
       let extractedFiles: ProjectFile[] = [];
@@ -160,6 +192,7 @@ function App() {
     setGithubRepos([]);
     setSelectedRepoFullName('');
     setFiles([]); 
+    setDependencies([]);
     setGlobalError(null);
   };
 
@@ -168,6 +201,7 @@ function App() {
     
     setIsGithubLoading(true);
     setGlobalError(null);
+    setDependencies([]);
     
     try {
       const [owner, repo] = selectedRepoFullName.split('/');
@@ -378,6 +412,75 @@ function App() {
     }
   };
 
+  // Dependency Management
+  const handleCheckUpdates = async () => {
+    if (dependencies.length === 0) return;
+    setIsCheckingUpdates(true);
+    try {
+      const updates = await auditDependencyVersions(dependencies.map(d => ({ name: d.name, currentVersion: d.currentVersion })));
+      
+      // Merge updates
+      setDependencies(prev => prev.map(p => {
+        const update = updates.find(u => u.name === p.name);
+        if (!update) return p;
+        return {
+          ...p,
+          latestVersion: update.latestVersion,
+          status: update.status
+        };
+      }));
+    } catch (err: any) {
+      setGlobalError("Failed to check updates: " + err.message);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
+  const handleUpgradeDependency = async (pkgName: string, newVersion: string, dependentFiles: string[]) => {
+    // 1. Update requirements.txt content
+    const reqFile = files.find(f => f.path.endsWith('requirements.txt'));
+    if (reqFile) {
+       // Regex to find the package line and update version
+       const regex = new RegExp(`^${pkgName}.*`, 'm');
+       const newContent = reqFile.content.replace(regex, `${pkgName}==${newVersion}`);
+       
+       updateFileStatus(reqFile.path, 'pending');
+       
+       setFiles(prev => prev.map(f => {
+         if (f.path === reqFile.path) {
+           return { ...f, content: newContent, status: 'pending' };
+         }
+         // Also mark dependent files as pending so we re-analyze them with new version context
+         if (dependentFiles.includes(f.path)) {
+           return { ...f, status: 'pending' };
+         }
+         return f;
+       }));
+
+       // Wait a tick for state to update then trigger re-analysis
+       setTimeout(() => {
+         const filesToReanalyze = [
+            reqFile, 
+            ...files.filter(f => dependentFiles.includes(f.path))
+         ];
+         // We must pass the updated objects (content is updated in state, but logic here needs care)
+         // Actually `runBatchAnalysis` reads from argument, so we need to construct it carefully
+         const updatedReq = { ...reqFile, content: newContent, status: 'pending' } as ProjectFile;
+         
+         const others = files
+            .filter(f => dependentFiles.includes(f.path))
+            .map(f => ({ ...f, status: 'pending' } as ProjectFile));
+            
+         runBatchAnalysis([updatedReq, ...others]);
+       }, 100);
+       
+       // Update local dependency state
+       setDependencies(prev => prev.map(d => 
+         d.name === pkgName ? { ...d, currentVersion: newVersion, status: 'up-to-date' } : d
+       ));
+    }
+  };
+
   const filesChangedCount = files.filter(f => f.status === 'completed' && f.result?.refactoredCode && f.result.refactoredCode !== f.content).length;
 
   return (
@@ -584,6 +687,10 @@ function App() {
                files={files} 
                isAnalyzing={isProjectAnalyzing}
                onSelectFile={setSelectedFilePath}
+               dependencies={dependencies}
+               onCheckUpdates={handleCheckUpdates}
+               onUpgradeDependency={handleUpgradeDependency}
+               isCheckingUpdates={isCheckingUpdates}
              />
           ) : (
             <>
