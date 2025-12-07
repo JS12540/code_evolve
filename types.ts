@@ -40,12 +40,19 @@ export enum TargetVersion {
   PY_3_9 = 'Python 3.9'
 }
 
+export interface ChatMessage {
+  role: 'user' | 'ai';
+  text: string;
+  timestamp: number;
+}
+
 export interface ProjectFile {
   path: string;
   content: string;
   language: 'python' | 'text' | 'other';
   status: 'pending' | 'analyzing' | 'completed' | 'error';
   result?: MigrationResult;
+  chatHistory?: ChatMessage[];
 }
 
 export interface FileNode {
@@ -87,4 +94,19 @@ export interface GitHubRepo {
 export interface PullRequestResult {
   url: string;
   number: number;
+}
+
+export interface GraphNode {
+  id: string;
+  group: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+}
+
+export interface DependencyGraphData {
+  nodes: GraphNode[];
+  links: GraphLink[];
 }

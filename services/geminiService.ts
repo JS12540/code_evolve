@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { MigrationResult, TargetVersion, ChangeType, Severity, Reference } from "../types";
+import { MigrationResult, TargetVersion, ChangeType, Severity, Reference, ChatMessage } from "../types";
 
 const apiKey = process.env.API_KEY || '';
 
@@ -147,5 +147,101 @@ export const analyzeCode = async (
   } catch (error) {
     console.error("Gemini API Error:", error);
     throw error;
+  }
+};
+
+export const generateUnitTests = async (
+  code: string,
+  filename: string,
+  targetVersion: TargetVersion
+): Promise<string> => {
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey });
+  
+  const prompt = `
+    Generate a comprehensive 'pytest' unit test file for the following Python code.
+    FILENAME: ${filename}
+    CODE:
+    ${code}
+
+    Requirements:
+    - Use 'pytest' fixtures where appropriate.
+    - Cover success scenarios.
+    - Cover edge cases and error handling.
+    - Mock external dependencies (APIs, DBs, files) using 'unittest.mock'.
+    - Target Python Version: ${targetVersion}.
+    - Return ONLY the raw python code for the test file. Do not wrap in markdown code blocks if possible, or I will strip them.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    config: { temperature: 0.2 }
+  });
+
+  return (response.text || "").replace(/```python/g, '').replace(/```/g, '').trim();
+};
+
+export const chatRefinement = async (
+  originalCode: string,
+  currentCode: string,
+  chatHistory: ChatMessage[],
+  newMessage: string
+): Promise<{ code: string; reply: string }> => {
+  if (!apiKey) throw new Error("API Key is missing.");
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const historyParts = chatHistory.map(msg => ({
+    role: msg.role === 'ai' ? 'model' : 'user',
+    parts: [{ text: msg.text }]
+  }));
+
+  const systemInstruction = `
+    You are an intelligent coding assistant helping a user refactor Python code.
+    You have the context of the original code and the current refactored state.
+    
+    If the user asks to modify the code:
+    1. Apply the changes to the 'Current Code'.
+    2. Return the FULL updated code in the JSON response.
+    3. Provide a conversational reply explaining what you did.
+
+    If the user asks a question:
+    1. Return the 'Current Code' unchanged.
+    2. Answer the question in the reply.
+
+    OUTPUT FORMAT:
+    JSON Object: { "code": "...", "reply": "..." }
+  `;
+
+  const prompt = `
+    ORIGINAL CODE:
+    ${originalCode}
+
+    CURRENT CODE:
+    ${currentCode}
+
+    USER REQUEST:
+    ${newMessage}
+  `;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      ...historyParts as any,
+      { role: "user", parts: [{ text: prompt }] }
+    ],
+    config: {
+      systemInstruction,
+      responseMimeType: "application/json"
+    }
+  });
+
+  const responseText = response.text || "{}";
+  try {
+    return JSON.parse(responseText);
+  } catch (e) {
+    return { code: currentCode, reply: "I'm sorry, I couldn't process that request correctly." };
   }
 };

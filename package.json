@@ -14,7 +14,9 @@
     "jszip": "3.10.1",
     "jspdf": "2.5.1",
     "react-dom": "^19.2.1",
-    "react": "^19.2.1"
+    "react": "^19.2.1",
+    "diff": "5.1.0",
+    "mermaid": "10"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

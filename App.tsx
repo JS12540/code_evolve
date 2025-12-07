@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import Header from './components/Header';
 import Editor from './components/Editor';
@@ -6,11 +5,13 @@ import ChangeLog from './components/ChangeLog';
 import FileTree from './components/FileTree';
 import GitHubAuth from './components/GitHubAuth';
 import ProjectDashboard from './components/ProjectDashboard';
-import { analyzeCode } from './services/geminiService';
+import DiffViewer from './components/DiffViewer';
+import ChatPanel from './components/ChatPanel';
+import { analyzeCode, generateUnitTests, chatRefinement } from './services/geminiService';
 import { extractZip, createAndDownloadZip } from './services/zipService';
 import { fetchRepoContents, createPullRequest, fetchUserRepos } from './services/githubService';
 import { generateMigrationReport } from './services/pdfService';
-import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo } from './types';
+import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo, ChatMessage } from './types';
 import { 
   Upload, 
   AlertCircle, 
@@ -27,7 +28,11 @@ import {
   LogOut,
   Lock,
   Globe,
-  ArrowLeft
+  ArrowLeft,
+  Bot,
+  TestTube2,
+  GitCompare,
+  MessageSquare
 } from 'lucide-react';
 
 const INITIAL_CODE_EXAMPLE = `# Legacy Python Example
@@ -64,7 +69,6 @@ function App() {
       status: 'pending'
     }
   ]);
-  // Defaults to dashboard view if more than 1 file, else the specific file
   const [selectedFilePath, setSelectedFilePath] = useState<string>('example.py');
   const [targetVersion, setTargetVersion] = useState<TargetVersion>(TargetVersion.PY_3_12);
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
@@ -83,8 +87,11 @@ function App() {
   const [isGithubLoading, setIsGithubLoading] = useState(false);
   const [prStatus, setPrStatus] = useState<{ url?: string; loading: boolean; error?: string } | null>(null);
 
-  // Right panel view state
-  const [activeTab, setActiveTab] = useState<'report' | 'code'>('report');
+  // View State
+  const [activeTab, setActiveTab] = useState<'report' | 'code' | 'diff'>('report');
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isGeneratingTests, setIsGeneratingTests] = useState(false);
+  const [isChatLoading, setIsChatLoading] = useState(false);
 
   const selectedFile = files.find(f => f.path === selectedFilePath);
 
@@ -176,7 +183,7 @@ function App() {
         setGlobalError("No supported files found in the repository (or empty).");
       } else {
         setFiles(fetchedFiles);
-        setSelectedFilePath(PROJECT_ROOT_ID); // Go to dashboard
+        setSelectedFilePath(PROJECT_ROOT_ID); 
         await runBatchAnalysis(fetchedFiles);
       }
     } catch (err: any) {
@@ -200,7 +207,7 @@ function App() {
         token: githubToken,
         owner,
         repo
-      }, files); // Pass ALL files, the service filters for changes
+      }, files);
       setPrStatus({ loading: false, url: result.url });
     } catch (err: any) {
       setPrStatus({ loading: false, error: err.message });
@@ -216,32 +223,27 @@ function App() {
   const runBatchAnalysis = async (filesToProcess: ProjectFile[]) => {
     setIsProjectAnalyzing(true);
     
-    // 1. Identify valid files and mark ignored/skipped immediately
     const filesToAnalyze: ProjectFile[] = [];
 
-    // Pre-processing loop to handle skips
     for (const file of filesToProcess) {
        if (file.status === 'completed') continue;
 
        const lowerPath = file.path.toLowerCase();
        const fileName = lowerPath.split('/').pop() || '';
 
-       // Explicitly ignore common non-code/metadata files as requested
        const isIgnored = 
           fileName === '.gitignore' || 
           fileName === 'readme.md' || 
           fileName === 'license' ||
-          fileName.startsWith('.') || // Hidden files like .env, .DS_Store
+          fileName.startsWith('.') || 
           lowerPath.includes('__pycache__');
 
-       // Check if it's a file we support for analysis (Python or Dependency Managers)
        const isAnalyzable = file.language === 'python' || 
                             lowerPath.includes('requirements') || 
                             lowerPath.includes('lock') || 
                             lowerPath.includes('toml') || 
                             lowerPath.includes('pipfile');
        
-       // Skip empty files
        const isEmpty = !file.content || file.content.trim().length === 0;
 
        if (isIgnored || !isAnalyzable || isEmpty) {
@@ -251,8 +253,7 @@ function App() {
        }
     }
 
-    // 2. Parallel Processing with Concurrency Limit
-    const CONCURRENCY_LIMIT = 4; // Process 4 files at a time to be safe with API/Browser limits
+    const CONCURRENCY_LIMIT = 4;
     const queue = [...filesToAnalyze];
     
     const analyzeWorker = async () => {
@@ -261,12 +262,8 @@ function App() {
             if (!file) break;
             
             try {
-                // Determine status inside the worker to ensure state updates happen in order
                 updateFileStatus(file.path, 'analyzing');
-                
-                // Actual API Call
                 const result = await analyzeCode(file.content, file.path, targetVersion);
-                
                 updateFileStatus(file.path, 'completed', result);
             } catch (err: any) {
                 console.error(`Error analyzing ${file.path}:`, err);
@@ -275,7 +272,6 @@ function App() {
         }
     };
 
-    // Create workers
     const workers = Array(Math.min(CONCURRENCY_LIMIT, filesToAnalyze.length))
         .fill(null)
         .map(() => analyzeWorker());
@@ -299,6 +295,86 @@ function App() {
         } finally {
             setIsProjectAnalyzing(false);
         }
+    }
+  };
+
+  const handleGenerateTests = async () => {
+    if (!selectedFile) return;
+    setIsGeneratingTests(true);
+    try {
+      const testCode = await generateUnitTests(selectedFile.content, selectedFile.path, targetVersion);
+      
+      const testFileName = `tests/test_${selectedFile.path.replace(/\//g, '_').replace('.py', '')}.py`;
+      
+      // We set 'content' to empty string for new files so PR generation sees it as "New" (differs from content)
+      const newFile: ProjectFile = {
+        path: testFileName,
+        content: '', 
+        language: 'python',
+        status: 'completed',
+        result: {
+          refactoredCode: testCode,
+          changes: [{
+            type: 'SYNTAX' as any,
+            severity: 'LOW' as any,
+            lineNumber: 1,
+            description: 'Created new unit test file.',
+          }],
+          summary: "Auto-generated unit tests via Gemini."
+        }
+      };
+      
+      setFiles(prev => {
+        // Remove if exists previously to overwrite
+        const filtered = prev.filter(f => f.path !== testFileName);
+        return [...filtered, newFile];
+      });
+      
+      setSelectedFilePath(testFileName);
+      setActiveTab('code');
+    } catch (err: any) {
+      setGlobalError("Test Generation Failed: " + err.message);
+    } finally {
+      setIsGeneratingTests(false);
+    }
+  };
+
+  const handleChatMessage = async (text: string) => {
+    if (!selectedFile || !selectedFile.result) return;
+    
+    setIsChatLoading(true);
+    const newHistory: ChatMessage[] = [
+      ...(selectedFile.chatHistory || []),
+      { role: 'user', text, timestamp: Date.now() }
+    ];
+
+    // Optimistic update
+    setFiles(prev => prev.map(f => 
+      f.path === selectedFile.path ? { ...f, chatHistory: newHistory } : f
+    ));
+
+    try {
+      const { code, reply } = await chatRefinement(
+        selectedFile.content, 
+        selectedFile.result.refactoredCode, 
+        newHistory, 
+        text
+      );
+
+      const aiMsg: ChatMessage = { role: 'ai', text: reply, timestamp: Date.now() };
+      const updatedHistory = [...newHistory, aiMsg];
+
+      setFiles(prev => prev.map(f => 
+        f.path === selectedFile.path ? { 
+          ...f, 
+          chatHistory: updatedHistory,
+          result: { ...f.result!, refactoredCode: code }
+        } : f
+      ));
+    } catch (err: any) {
+      setGlobalError("Chat Error: " + err.message);
+    } finally {
+      setIsChatLoading(false);
     }
   };
 
@@ -442,7 +518,14 @@ function App() {
               files={files} 
               selectedFile={selectedFile || null} 
               selectedPath={selectedFilePath}
-              onSelect={(path) => setSelectedFilePath(path)} 
+              onSelect={(path) => {
+                setSelectedFilePath(path);
+                // Reset to report or code tab when switching files usually
+                if (path !== PROJECT_ROOT_ID) {
+                   const f = files.find(f => f.path === path);
+                   if (f?.status === 'completed') setActiveTab('code');
+                }
+              }} 
             />
           </div>
 
@@ -528,7 +611,31 @@ function App() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
+                  {/* Unit Test Button */}
+                   {selectedFile?.language === 'python' && (
+                      <button
+                        onClick={handleGenerateTests}
+                        disabled={isGeneratingTests || isProjectAnalyzing}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium border border-slate-600 transition-all disabled:opacity-50"
+                        title="Generate pytest unit tests"
+                      >
+                         {isGeneratingTests ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TestTube2 className="w-3.5 h-3.5" />}
+                         Generate Tests
+                      </button>
+                   )}
+
+                   {/* Chat Button */}
+                   <button
+                    onClick={() => setIsChatOpen(!isChatOpen)}
+                    className={`p-2 rounded-md transition-colors ${isChatOpen ? 'bg-primary text-white shadow' : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                    title="Chat with AI"
+                   >
+                     <MessageSquare className="w-4 h-4" />
+                   </button>
+
+                  <div className="h-6 w-px bg-slate-700 mx-1" />
+
                   <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
                     <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Target</span>
                     <select 
@@ -561,9 +668,9 @@ function App() {
               )}
 
               {/* Editor & Results Split */}
-              <div className="flex-1 flex min-h-0">
-                {/* Left Column: Original Code */}
-                <div className="flex-1 flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden">
+              <div className="flex-1 flex min-h-0 relative">
+                {/* Left Column: Original Code (Hidden if diff mode, or shown as source) */}
+                <div className={`flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden ${activeTab === 'diff' ? 'hidden' : 'flex-1'}`}>
                     <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
                       <Editor 
                         label="Current File Content" 
@@ -593,7 +700,7 @@ function App() {
                             `}
                           >
                             <BarChart3 className="w-3.5 h-3.5" />
-                            Migration Report
+                            Report
                           </button>
                           <button 
                             onClick={() => setActiveTab('code')}
@@ -606,7 +713,20 @@ function App() {
                             `}
                           >
                             <Code2 className="w-3.5 h-3.5" />
-                            Refactored Code
+                            Refactored
+                          </button>
+                          <button 
+                            onClick={() => setActiveTab('diff')}
+                            className={`
+                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                              ${activeTab === 'diff' 
+                                ? 'bg-surface border-slate-700 text-amber-400 border-b-surface mb-[-1px] z-10' 
+                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                              }
+                            `}
+                          >
+                            <GitCompare className="w-3.5 h-3.5" />
+                            Diff
                           </button>
                         </div>
 
@@ -626,6 +746,11 @@ function App() {
                               summary={selectedFile.result.summary} 
                               references={selectedFile.result.references}
                             />
+                          )}
+                          {activeTab === 'diff' && (
+                            <div className="h-full bg-[#0a0f1e] rounded-xl border border-slate-700 overflow-hidden">
+                               <DiffViewer original={selectedFile.content} modified={selectedFile.result.refactoredCode} />
+                            </div>
                           )}
                         </div>
                       </>
@@ -652,6 +777,16 @@ function App() {
                       </div>
                     )}
                 </div>
+
+                {/* Chat Panel Overlay */}
+                {isChatOpen && selectedFile && (
+                  <ChatPanel 
+                    messages={selectedFile.chatHistory || []} 
+                    onSendMessage={handleChatMessage} 
+                    isLoading={isChatLoading}
+                    onClose={() => setIsChatOpen(false)}
+                  />
+                )}
               </div>
             </>
           )}
