@@ -1,4 +1,4 @@
-import { ProjectFile, DependencyGraphData, GraphNode, GraphLink, DependencyItem } from '../types';
+import { ProjectFile, DependencyGraphData, GraphNode, GraphLink } from '../types';
 
 export const buildDependencyGraph = (files: ProjectFile[]): DependencyGraphData => {
   const nodes: GraphNode[] = [];
@@ -195,5 +195,5 @@ export const mapPackagesToFiles = (files: ProjectFile[], packages: string[]): Re
   return mapping;
 };
 
-// Re-export for compatibility if needed, though mostly replaced by extractAllDependencies
+// Re-export for compatibility if needed
 export const parseRequirements = parseRequirementsTxt;

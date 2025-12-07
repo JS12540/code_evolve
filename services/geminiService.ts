@@ -101,7 +101,8 @@ export const analyzeCode = async (
 
     // 1. Parse Text Result
     const responseText = response.text || "";
-    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+    // Robust cleanup of markdown code blocks
+    const cleanJson = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
     
     let result: MigrationResult;
     try {
@@ -225,10 +226,10 @@ export const chatRefinement = async (
     ${projectContext}
 
     ORIGINAL CODE:
-    ${originalCode}
+    ${originalCode || '(No original code context)'}
 
     CURRENT CODE:
-    ${currentCode}
+    ${currentCode || '(No current code context)'}
 
     USER REQUEST:
     ${newMessage}
