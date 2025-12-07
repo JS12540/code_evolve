@@ -388,11 +388,15 @@ function App() {
     ));
 
     try {
+      // Pass project structure context
+      const projectContext = files.map(f => f.path).join('\n');
+
       const { code, reply } = await chatRefinement(
         selectedFile.content, 
         selectedFile.result.refactoredCode, 
         newHistory, 
-        text
+        text,
+        projectContext
       );
 
       const aiMsg: ChatMessage = { role: 'ai', text: reply, timestamp: Date.now() };
@@ -405,6 +409,11 @@ function App() {
           result: { ...f.result!, refactoredCode: code }
         } : f
       ));
+      
+      // Auto-switch to code tab if it changed, so user sees effect
+      if (code !== selectedFile.result.refactoredCode) {
+         setActiveTab('code'); 
+      }
     } catch (err: any) {
       setGlobalError("Chat Error: " + err.message);
     } finally {
@@ -776,123 +785,130 @@ function App() {
 
               {/* Editor & Results Split */}
               <div className="flex-1 flex min-h-0 relative">
-                {/* Left Column: Original Code (Hidden if diff mode, or shown as source) */}
-                <div className={`flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden ${activeTab === 'diff' ? 'hidden' : 'flex-1'}`}>
-                    <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
-                      <Editor 
-                        label="Current File Content" 
-                        code={selectedFile?.content || ''} 
-                        onChange={(val) => {
-                          setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
-                        }}
-                        readOnly={false}
-                      />
+                {/* Left/Main Column: Editors */}
+                <div className="flex-1 flex flex-col min-h-0 min-w-0">
+                  <div className="flex-1 flex min-h-0">
+                    {/* Left Column: Original Code (Hidden if diff mode, or shown as source) */}
+                    <div className={`flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden ${activeTab === 'diff' ? 'hidden' : 'flex-1'}`}>
+                        <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
+                          <Editor 
+                            label="Current File Content" 
+                            code={selectedFile?.content || ''} 
+                            onChange={(val) => {
+                              setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
+                            }}
+                            readOnly={false}
+                          />
+                        </div>
                     </div>
-                </div>
 
-                {/* Right Column: Results (Tabs) */}
-                <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20 overflow-hidden">
-                    {selectedFile?.result ? (
-                      <>
-                        {/* Tabs */}
-                        <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1 flex-shrink-0">
-                          <button 
-                            onClick={() => setActiveTab('report')}
-                            className={`
-                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                              ${activeTab === 'report' 
-                                ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
-                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                              }
-                            `}
-                          >
-                            <BarChart3 className="w-3.5 h-3.5" />
-                            Report
-                          </button>
-                          <button 
-                            onClick={() => setActiveTab('code')}
-                            className={`
-                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                              ${activeTab === 'code' 
-                                ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
-                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                              }
-                            `}
-                          >
-                            <Code2 className="w-3.5 h-3.5" />
-                            Refactored
-                          </button>
-                          <button 
-                            onClick={() => setActiveTab('diff')}
-                            className={`
-                              flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                              ${activeTab === 'diff' 
-                                ? 'bg-surface border-slate-700 text-amber-400 border-b-surface mb-[-1px] z-10' 
-                                : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                              }
-                            `}
-                          >
-                            <GitCompare className="w-3.5 h-3.5" />
-                            Diff
-                          </button>
-                        </div>
-
-                        {/* Tab Content */}
-                        <div className="flex-1 min-h-0 p-4 relative bg-surface/30 overflow-hidden">
-                          {activeTab === 'code' && (
-                            <Editor 
-                              label="AI Refactored Result" 
-                              code={selectedFile.result.refactoredCode} 
-                              readOnly={true} 
-                              className="h-full shadow-xl"
-                            />
-                          )}
-                          {activeTab === 'report' && (
-                            <ChangeLog 
-                              changes={selectedFile.result.changes} 
-                              summary={selectedFile.result.summary} 
-                              references={selectedFile.result.references}
-                            />
-                          )}
-                          {activeTab === 'diff' && (
-                            <div className="h-full bg-[#0a0f1e] rounded-xl border border-slate-700 overflow-hidden">
-                               <DiffViewer original={selectedFile.content} modified={selectedFile.result.refactoredCode} />
+                    {/* Right Column: Results (Tabs) */}
+                    <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20 overflow-hidden">
+                        {selectedFile?.result ? (
+                          <>
+                            {/* Tabs */}
+                            <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1 flex-shrink-0">
+                              <button 
+                                onClick={() => setActiveTab('report')}
+                                className={`
+                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                  ${activeTab === 'report' 
+                                    ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
+                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                  }
+                                `}
+                              >
+                                <BarChart3 className="w-3.5 h-3.5" />
+                                Report
+                              </button>
+                              <button 
+                                onClick={() => setActiveTab('code')}
+                                className={`
+                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                  ${activeTab === 'code' 
+                                    ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
+                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                  }
+                                `}
+                              >
+                                <Code2 className="w-3.5 h-3.5" />
+                                Refactored
+                              </button>
+                              <button 
+                                onClick={() => setActiveTab('diff')}
+                                className={`
+                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                  ${activeTab === 'diff' 
+                                    ? 'bg-surface border-slate-700 text-amber-400 border-b-surface mb-[-1px] z-10' 
+                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                  }
+                                `}
+                              >
+                                <GitCompare className="w-3.5 h-3.5" />
+                                Diff
+                              </button>
                             </div>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
-                          <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
-                            {isProjectAnalyzing ? (
-                              <>
-                                <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
-                                <Loader2 className="w-8 h-8 text-primary" />
-                              </>
-                            ) : (
-                              <FileCode className="w-8 h-8 opacity-50" />
-                            )}
+
+                            {/* Tab Content */}
+                            <div className="flex-1 min-h-0 p-4 relative bg-surface/30 overflow-hidden">
+                              {activeTab === 'code' && (
+                                <Editor 
+                                  label="AI Refactored Result" 
+                                  code={selectedFile.result.refactoredCode} 
+                                  readOnly={true} 
+                                  className="h-full shadow-xl"
+                                />
+                              )}
+                              {activeTab === 'report' && (
+                                <ChangeLog 
+                                  changes={selectedFile.result.changes} 
+                                  summary={selectedFile.result.summary} 
+                                  references={selectedFile.result.references}
+                                />
+                              )}
+                              {activeTab === 'diff' && (
+                                <div className="h-full bg-[#0a0f1e] rounded-xl border border-slate-700 overflow-hidden">
+                                  <DiffViewer original={selectedFile.content} modified={selectedFile.result.refactoredCode} />
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
+                              <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
+                                {isProjectAnalyzing ? (
+                                  <>
+                                    <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
+                                    <Loader2 className="w-8 h-8 text-primary" />
+                                  </>
+                                ) : (
+                                  <FileCode className="w-8 h-8 opacity-50" />
+                                )}
+                              </div>
+                              <h3 className="text-lg font-medium text-slate-200 mb-2">
+                                {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
+                              </h3>
+                              <p className="text-sm max-w-sm leading-relaxed text-slate-400">
+                                {isProjectAnalyzing 
+                                  ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
+                                  : 'Select a file to view detailed changes.'}
+                              </p>
                           </div>
-                          <h3 className="text-lg font-medium text-slate-200 mb-2">
-                            {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
-                          </h3>
-                          <p className="text-sm max-w-sm leading-relaxed text-slate-400">
-                            {isProjectAnalyzing 
-                              ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
-                              : 'Select a file to view detailed changes.'}
-                          </p>
-                      </div>
-                    )}
+                        )}
+                    </div>
+                  </div>
                 </div>
 
-                {/* Chat Panel Overlay */}
+                {/* Chat Panel - Split View */}
                 {isChatOpen && selectedFile && (
-                  <ChatPanel 
-                    messages={selectedFile.chatHistory || []} 
-                    onSendMessage={handleChatMessage} 
-                    isLoading={isChatLoading}
-                    onClose={() => setIsChatOpen(false)}
-                  />
+                   <div className="w-96 flex-shrink-0 z-10 transition-all">
+                      <ChatPanel 
+                        messages={selectedFile.chatHistory || []} 
+                        onSendMessage={handleChatMessage} 
+                        isLoading={isChatLoading}
+                        onClose={() => setIsChatOpen(false)}
+                      />
+                   </div>
                 )}
               </div>
             </>

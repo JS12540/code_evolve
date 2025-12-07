@@ -187,7 +187,8 @@ export const chatRefinement = async (
   originalCode: string,
   currentCode: string,
   chatHistory: ChatMessage[],
-  newMessage: string
+  newMessage: string,
+  projectContext: string = ""
 ): Promise<{ code: string; reply: string }> => {
   if (!apiKey) throw new Error("API Key is missing.");
 
@@ -199,9 +200,13 @@ export const chatRefinement = async (
   }));
 
   const systemInstruction = `
-    You are an intelligent coding assistant helping a user refactor Python code.
-    You have the context of the original code and the current refactored state.
+    You are an intelligent coding assistant helping a user refactor Python code in a larger project.
     
+    CONTEXT:
+    - You have the 'Original Code' and the 'Current Refactored State'.
+    - You have a list of other files in the project ('Project Context'). Use this to infer imports or project structure if asked.
+    
+    INSTRUCTIONS:
     If the user asks to modify the code:
     1. Apply the changes to the 'Current Code'.
     2. Return the FULL updated code in the JSON response.
@@ -216,6 +221,9 @@ export const chatRefinement = async (
   `;
 
   const prompt = `
+    PROJECT FILES:
+    ${projectContext}
+
     ORIGINAL CODE:
     ${originalCode}
 
