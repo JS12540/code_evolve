@@ -117,5 +117,6 @@ export interface DependencyItem {
   latestVersion?: string;
   usageCount: number;
   usedInFiles: string[]; // paths
+  sourceFile: string; // which file defined this dependency
   status: 'up-to-date' | 'outdated' | 'unknown';
 }

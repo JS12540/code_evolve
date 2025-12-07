@@ -10,7 +10,7 @@ import ChatPanel from './components/ChatPanel';
 import { analyzeCode, generateUnitTests, chatRefinement, auditDependencyVersions } from './services/geminiService';
 import { extractZip, createAndDownloadZip } from './services/zipService';
 import { fetchRepoContents, createPullRequest, fetchUserRepos } from './services/githubService';
-import { parseRequirements, mapPackagesToFiles } from './services/dependencyService';
+import { extractAllDependencies, mapPackagesToFiles } from './services/dependencyService';
 import { generateMigrationReport } from './services/pdfService';
 import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo, ChatMessage, DependencyItem } from './types';
 import { 
@@ -100,31 +100,41 @@ function App() {
 
   const selectedFile = files.find(f => f.path === selectedFilePath);
 
-  // Parse initial dependencies when files change
+  // Parse dependencies whenever file list significantly changes (e.g. import)
   useEffect(() => {
-    const reqFile = files.find(f => f.path.endsWith('requirements.txt'));
-    if (reqFile) {
-        // Only parse if we haven't done it or if content changed significantly
-        // For MVP we just parse on file load.
-        // If we already have dependencies populated with "latestVersion" logic, try to preserve it
-        // But for simplicity, we just rebuild from content and reset
-        const parsed = parseRequirements(reqFile.content);
-        const fileMap = mapPackagesToFiles(files, parsed.map(p => p.name));
-        
-        const newDeps: DependencyItem[] = parsed.map(p => {
-             const existing = dependencies.find(d => d.name === p.name);
-             return {
-                 name: p.name,
-                 currentVersion: p.version,
-                 latestVersion: existing?.latestVersion, // preserve if exists
-                 status: existing?.status || 'unknown',
-                 usageCount: fileMap[p.name]?.length || 0,
-                 usedInFiles: fileMap[p.name] || []
-             };
+    // Only run if we have files
+    if (files.length === 0) return;
+
+    // Use new extraction service that handles multiple file types
+    const extractedDeps = extractAllDependencies(files);
+    
+    // Map usage across python files
+    const allPkgNames = Array.from(new Set(extractedDeps.flatMap(d => d.items.map(i => i.name))));
+    const fileMap = mapPackagesToFiles(files, allPkgNames);
+
+    const newDeps: DependencyItem[] = [];
+    
+    extractedDeps.forEach(source => {
+      source.items.forEach(item => {
+        // preserve existing check data if name matches
+        const existing = dependencies.find(d => d.name === item.name);
+        newDeps.push({
+          name: item.name,
+          currentVersion: item.version,
+          latestVersion: existing?.latestVersion,
+          status: existing?.status || 'unknown',
+          usageCount: fileMap[item.name]?.length || 0,
+          usedInFiles: fileMap[item.name] || [],
+          sourceFile: source.file
         });
-        setDependencies(newDeps);
+      });
+    });
+
+    // Simple diff check to avoid infinite loop
+    if (newDeps.length !== dependencies.length) {
+       setDependencies(newDeps);
     }
-  }, [files.length]); // Dependency check logic simplified to file count for MVP trigger
+  }, [files.length]); 
 
   // Filter repos based on search
   const filteredRepos = useMemo(() => {
@@ -340,7 +350,6 @@ function App() {
       
       const testFileName = `tests/test_${selectedFile.path.replace(/\//g, '_').replace('.py', '')}.py`;
       
-      // We set 'content' to empty string for new files so PR generation sees it as "New" (differs from content)
       const newFile: ProjectFile = {
         path: testFileName,
         content: '', 
@@ -359,7 +368,6 @@ function App() {
       };
       
       setFiles(prev => {
-        // Remove if exists previously to overwrite
         const filtered = prev.filter(f => f.path !== testFileName);
         return [...filtered, newFile];
       });
@@ -374,26 +382,37 @@ function App() {
   };
 
   const handleChatMessage = async (text: string) => {
-    if (!selectedFile || !selectedFile.result) return;
-    
+    // If no file selected (Dashboard mode), we assume global project query?
+    // For MVP, we'll try to use the "selectedFilePath" if available, else warn or use a dummy context.
+    const activeFile = selectedFile || files[0]; // fallback
+    if (!activeFile) return;
+
     setIsChatLoading(true);
+    
+    // Create new history entry
     const newHistory: ChatMessage[] = [
-      ...(selectedFile.chatHistory || []),
+      ...(activeFile.chatHistory || []),
       { role: 'user', text, timestamp: Date.now() }
     ];
 
-    // Optimistic update
+    // Optimistic UI update
     setFiles(prev => prev.map(f => 
-      f.path === selectedFile.path ? { ...f, chatHistory: newHistory } : f
+      f.path === activeFile.path ? { ...f, chatHistory: newHistory } : f
     ));
 
     try {
-      // Pass project structure context
       const projectContext = files.map(f => f.path).join('\n');
+      
+      // Use refactoredCode if available, else content.
+      // If we are in Dashboard mode (no selectedFile), we might be chatting about the project. 
+      // Current Chat implementation assumes a single file context for "Refactoring".
+      // We will simply pass "Project Summary" as code if none exists.
+      
+      const currentCode = activeFile.result?.refactoredCode || activeFile.content;
 
       const { code, reply } = await chatRefinement(
-        selectedFile.content, 
-        selectedFile.result.refactoredCode, 
+        activeFile.content, 
+        currentCode, 
         newHistory, 
         text,
         projectContext
@@ -403,15 +422,21 @@ function App() {
       const updatedHistory = [...newHistory, aiMsg];
 
       setFiles(prev => prev.map(f => 
-        f.path === selectedFile.path ? { 
+        f.path === activeFile.path ? { 
           ...f, 
           chatHistory: updatedHistory,
-          result: { ...f.result!, refactoredCode: code }
+          // Only update result code if we actually got code back
+          result: { 
+             ...f.result!, 
+             refactoredCode: code || f.result?.refactoredCode || f.content,
+             changes: f.result?.changes || [],
+             summary: f.result?.summary || 'Updated via Chat'
+          }
         } : f
       ));
       
-      // Auto-switch to code tab if it changed, so user sees effect
-      if (code !== selectedFile.result.refactoredCode) {
+      if (code && code !== currentCode) {
+         if (selectedFilePath !== activeFile.path) setSelectedFilePath(activeFile.path);
          setActiveTab('code'); 
       }
     } catch (err: any) {
@@ -421,14 +446,12 @@ function App() {
     }
   };
 
-  // Dependency Management
   const handleCheckUpdates = async () => {
     if (dependencies.length === 0) return;
     setIsCheckingUpdates(true);
     try {
       const updates = await auditDependencyVersions(dependencies.map(d => ({ name: d.name, currentVersion: d.currentVersion })));
       
-      // Merge updates
       setDependencies(prev => prev.map(p => {
         const update = updates.find(u => u.name === p.name);
         if (!update) return p;
@@ -446,44 +469,54 @@ function App() {
   };
 
   const handleUpgradeDependency = async (pkgName: string, newVersion: string, dependentFiles: string[]) => {
-    // 1. Update requirements.txt content
-    const reqFile = files.find(f => f.path.endsWith('requirements.txt'));
-    if (reqFile) {
-       // Regex to find the package line and update version
-       const regex = new RegExp(`^${pkgName}.*`, 'm');
-       const newContent = reqFile.content.replace(regex, `${pkgName}==${newVersion}`);
-       
-       updateFileStatus(reqFile.path, 'pending');
-       
+    // Find which file to update
+    const dep = dependencies.find(d => d.name === pkgName);
+    if (!dep || !dep.sourceFile) return;
+
+    const sourceFile = files.find(f => f.path === dep.sourceFile);
+    if (!sourceFile) return;
+
+    // Simple Regex replacement logic
+    let newContent = sourceFile.content;
+    const escapedName = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // escape regex chars
+    
+    // Heuristics based on file type
+    if (sourceFile.path.endsWith('.txt')) {
+       // requirements.txt: name==version
+       const regex = new RegExp(`^${escapedName}([=<>!~]+.*)?$`, 'm');
+       newContent = sourceFile.content.replace(regex, `${pkgName}==${newVersion}`);
+    } else if (sourceFile.path.endsWith('.toml')) {
+       // pyproject.toml: name = "version"
+       const regex = new RegExp(`^"?${escapedName}"?\\s*=\s*".*"`, 'm');
+       if (regex.test(sourceFile.content)) {
+         newContent = sourceFile.content.replace(regex, `${pkgName} = "${newVersion}"`);
+       } else {
+         // Poetry style?
+         const poetryRegex = new RegExp(`^${escapedName}\\s*=\s*".*"`, 'm');
+         newContent = sourceFile.content.replace(poetryRegex, `${pkgName} = "${newVersion}"`);
+       }
+    }
+
+    if (newContent !== sourceFile.content) {
+       updateFileStatus(sourceFile.path, 'pending');
        setFiles(prev => prev.map(f => {
-         if (f.path === reqFile.path) {
+         if (f.path === sourceFile.path) {
            return { ...f, content: newContent, status: 'pending' };
          }
-         // Also mark dependent files as pending so we re-analyze them with new version context
          if (dependentFiles.includes(f.path)) {
            return { ...f, status: 'pending' };
          }
          return f;
        }));
 
-       // Wait a tick for state to update then trigger re-analysis
        setTimeout(() => {
          const filesToReanalyze = [
-            reqFile, 
-            ...files.filter(f => dependentFiles.includes(f.path))
+            { ...sourceFile, content: newContent, status: 'pending' } as ProjectFile,
+            ...files.filter(f => dependentFiles.includes(f.path)).map(f => ({ ...f, status: 'pending' } as ProjectFile))
          ];
-         // We must pass the updated objects (content is updated in state, but logic here needs care)
-         // Actually `runBatchAnalysis` reads from argument, so we need to construct it carefully
-         const updatedReq = { ...reqFile, content: newContent, status: 'pending' } as ProjectFile;
-         
-         const others = files
-            .filter(f => dependentFiles.includes(f.path))
-            .map(f => ({ ...f, status: 'pending' } as ProjectFile));
-            
-         runBatchAnalysis([updatedReq, ...others]);
+         runBatchAnalysis(filesToReanalyze);
        }, 100);
        
-       // Update local dependency state
        setDependencies(prev => prev.map(d => 
          d.name === pkgName ? { ...d, currentVersion: newVersion, status: 'up-to-date' } : d
        ));
@@ -494,13 +527,12 @@ function App() {
 
   return (
     <div className="min-h-screen bg-background text-slate-200 font-sans selection:bg-primary/20 flex flex-col h-screen overflow-hidden">
-      <Header />
+      <Header onToggleChat={() => setIsChatOpen(!isChatOpen)} isChatOpen={isChatOpen} />
 
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden relative">
         
         {/* Sidebar */}
         <aside className="w-80 border-r border-slate-700 bg-surface flex flex-col flex-shrink-0 z-20">
-          
           {/* Source Toggle */}
           <div className="p-4 border-b border-slate-700 bg-slate-900/30">
              <div className="flex bg-slate-800 p-1 rounded-lg mb-4">
@@ -632,7 +664,6 @@ function App() {
               selectedPath={selectedFilePath}
               onSelect={(path) => {
                 setSelectedFilePath(path);
-                // Reset to report or code tab when switching files usually
                 if (path !== PROJECT_ROOT_ID) {
                    const f = files.find(f => f.path === path);
                    if (f?.status === 'completed') setActiveTab('code');
@@ -740,15 +771,6 @@ function App() {
                          Generate Tests
                       </button>
                    )}
-
-                   {/* Chat Button */}
-                   <button
-                    onClick={() => setIsChatOpen(!isChatOpen)}
-                    className={`p-2 rounded-md transition-colors ${isChatOpen ? 'bg-primary text-white shadow' : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'}`}
-                    title="Chat with AI"
-                   >
-                     <MessageSquare className="w-4 h-4" />
-                   </button>
 
                   <div className="h-6 w-px bg-slate-700 mx-1" />
 
@@ -898,20 +920,20 @@ function App() {
                     </div>
                   </div>
                 </div>
-
-                {/* Chat Panel - Split View */}
-                {isChatOpen && selectedFile && (
-                   <div className="w-96 flex-shrink-0 z-10 transition-all">
-                      <ChatPanel 
-                        messages={selectedFile.chatHistory || []} 
-                        onSendMessage={handleChatMessage} 
-                        isLoading={isChatLoading}
-                        onClose={() => setIsChatOpen(false)}
-                      />
-                   </div>
-                )}
               </div>
             </>
+          )}
+
+          {/* Global Chat Overlay/Split - Rendered LAST to be on top of everything if needed */}
+          {isChatOpen && (
+             <div className="absolute right-0 top-0 bottom-0 w-96 bg-surface border-l border-slate-700 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-300">
+                <ChatPanel 
+                  messages={selectedFile?.chatHistory || []} 
+                  onSendMessage={handleChatMessage} 
+                  isLoading={isChatLoading}
+                  onClose={() => setIsChatOpen(false)}
+                />
+             </div>
           )}
         </div>
       </main>

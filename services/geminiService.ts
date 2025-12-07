@@ -213,7 +213,7 @@ export const chatRefinement = async (
     3. Provide a conversational reply explaining what you did.
 
     If the user asks a question:
-    1. Return the 'Current Code' unchanged.
+    1. Return the 'Current Code' unchanged (or empty if no code provided).
     2. Answer the question in the reply.
 
     OUTPUT FORMAT:
@@ -256,7 +256,7 @@ export const chatRefinement = async (
 
 export const auditDependencyVersions = async (
   packages: { name: string, currentVersion: string }[]
-): Promise<DependencyItem[]> => {
+): Promise<Pick<DependencyItem, 'name' | 'currentVersion' | 'latestVersion' | 'status'>[]> => {
   if (!apiKey) throw new Error("API Key is missing.");
   const ai = new GoogleGenAI({ apiKey });
 
@@ -301,9 +301,10 @@ export const auditDependencyVersions = async (
   try {
     const items = JSON.parse(cleanJson);
     return items.map((item: any) => ({
-      ...item,
-      usageCount: 0,
-      usedInFiles: []
+      name: item.name,
+      currentVersion: item.currentVersion,
+      latestVersion: item.latestVersion,
+      status: item.status
     }));
   } catch (e) {
     console.error("Failed to parse dependency audit", e);
@@ -311,9 +312,7 @@ export const auditDependencyVersions = async (
       name: p.name,
       currentVersion: p.currentVersion,
       latestVersion: '?',
-      status: 'unknown',
-      usageCount: 0,
-      usedInFiles: []
+      status: 'unknown' as const
     }));
   }
 };

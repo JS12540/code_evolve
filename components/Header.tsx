@@ -1,7 +1,12 @@
 import React from 'react';
-import { Sparkles, Terminal } from 'lucide-react';
+import { Sparkles, Terminal, MessageSquare, X } from 'lucide-react';
 
-const Header: React.FC = () => {
+interface HeaderProps {
+  onToggleChat?: () => void;
+  isChatOpen?: boolean;
+}
+
+const Header: React.FC<HeaderProps> = ({ onToggleChat, isChatOpen }) => {
   return (
     <header className="border-b border-slate-800 bg-background/50 backdrop-blur-md sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
@@ -18,7 +23,23 @@ const Header: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-4">
-           <div className="hidden md:flex items-center gap-1 text-xs text-slate-500 font-mono">
+           {onToggleChat && (
+             <button
+               onClick={onToggleChat}
+               className={`
+                 flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-semibold transition-all border
+                 ${isChatOpen 
+                   ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' 
+                   : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                 }
+               `}
+             >
+               {isChatOpen ? <X className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+               AI Chat
+             </button>
+           )}
+
+           <div className="hidden md:flex items-center gap-1 text-xs text-slate-500 font-mono pl-4 border-l border-slate-700">
              <Sparkles className="w-3 h-3" />
              <span>Powered by Gemini 2.5 Flash</span>
            </div>
