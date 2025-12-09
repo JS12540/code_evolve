@@ -11,6 +11,7 @@ import { analyzeCode, generateUnitTests, chatRefinement, auditDependencyVersions
 import { extractZip, createAndDownloadZip } from './services/zipService';
 import { fetchRepoContents, createPullRequest, fetchUserRepos } from './services/githubService';
 import { extractAllDependencies, mapPackagesToFiles } from './services/dependencyService';
+import { vectorService } from './services/vectorService';
 import { generateMigrationReport } from './services/pdfService';
 import { MigrationResult, TargetVersion, ProjectFile, GitHubConfig, GitHubUser, GitHubRepo, ChatMessage, DependencyItem } from './types';
 import { 
@@ -96,6 +97,7 @@ function App() {
   
   const [isGithubLoading, setIsGithubLoading] = useState(false);
   const [prStatus, setPrStatus] = useState<{ url?: string; loading: boolean; error?: string } | null>(null);
+  const [hasPrBeenCreated, setHasPrBeenCreated] = useState(false);
 
   // View State
   const [activeTab, setActiveTab] = useState<'report' | 'code' | 'diff'>('report');
@@ -103,25 +105,29 @@ function App() {
   const [isGeneratingTests, setIsGeneratingTests] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
 
+  // Indexing State
+  const [isIndexing, setIsIndexing] = useState(false);
+
   const selectedFile = files.find(f => f.path === selectedFilePath);
 
-  // Parse dependencies whenever file list significantly changes (e.g. import)
+  // Persistence Logic
   useEffect(() => {
-    // Only run if we have files
+    // Load state on mount
+    const savedIndex = localStorage.getItem('vectorIndexState');
+    if (savedIndex) vectorService.importState(savedIndex);
+  }, []);
+
+  // Parse dependencies and Index Code whenever file list significantly changes
+  useEffect(() => {
     if (files.length === 0) return;
 
-    // Use new extraction service that handles multiple file types
+    // 1. Dependency Analysis
     const extractedDeps = extractAllDependencies(files);
-    
-    // Map usage across python files
     const allPkgNames = Array.from(new Set(extractedDeps.flatMap(d => d.items.map(i => i.name))));
     const fileMap = mapPackagesToFiles(files, allPkgNames);
-
     const newDeps: DependencyItem[] = [];
-    
     extractedDeps.forEach(source => {
       source.items.forEach(item => {
-        // preserve existing check data if name matches
         const existing = dependencies.find(d => d.name === item.name);
         newDeps.push({
           name: item.name,
@@ -134,11 +140,17 @@ function App() {
         });
       });
     });
+    if (newDeps.length !== dependencies.length) setDependencies(newDeps);
 
-    // Simple diff check to avoid infinite loop
-    if (newDeps.length !== dependencies.length) {
-       setDependencies(newDeps);
-    }
+    // 2. Vector Indexing (Debounced)
+    const timeout = setTimeout(async () => {
+      setIsIndexing(true);
+      await vectorService.createIndex(files);
+      localStorage.setItem('vectorIndexState', vectorService.exportState());
+      setIsIndexing(false);
+    }, 2000);
+
+    return () => clearTimeout(timeout);
   }, [files.length]); 
 
   // Filter repos based on search
@@ -151,9 +163,8 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setGlobalError(null);
+    resetProjectState();
     setIsProjectAnalyzing(true);
-    setDependencies([]);
 
     try {
       let extractedFiles: ProjectFile[] = [];
@@ -187,6 +198,14 @@ function App() {
     }
   };
 
+  const resetProjectState = () => {
+    setFiles([]);
+    setDependencies([]);
+    setGlobalError(null);
+    setPrStatus(null);
+    setHasPrBeenCreated(false);
+  };
+
   const handleGithubLogin = async (token: string, user: GitHubUser) => {
     setGithubToken(token);
     setGithubUser(user);
@@ -206,17 +225,14 @@ function App() {
     setGithubToken('');
     setGithubRepos([]);
     setSelectedRepoFullName('');
-    setFiles([]); 
-    setDependencies([]);
-    setGlobalError(null);
+    resetProjectState();
   };
 
   const handleImportRepo = async () => {
     if (!selectedRepoFullName) return;
     
     setIsGithubLoading(true);
-    setGlobalError(null);
-    setDependencies([]);
+    resetProjectState();
     
     try {
       const [owner, repo] = selectedRepoFullName.split('/');
@@ -258,6 +274,7 @@ function App() {
         repo
       }, files);
       setPrStatus({ loading: false, url: result.url });
+      setHasPrBeenCreated(true); // Disable/Hide button logic
     } catch (err: any) {
       setPrStatus({ loading: false, error: err.message });
     }
@@ -296,7 +313,7 @@ function App() {
        const lowerPath = file.path.toLowerCase();
        const fileName = lowerPath.split('/').pop() || '';
 
-       // Extra safety check in case backend filters missed something
+       // Safety Check
        const isIgnored = 
           fileName === '.gitignore' || 
           fileName === 'readme.md' || 
@@ -431,7 +448,12 @@ function App() {
     ));
 
     try {
-      const projectContext = files.map(f => f.path).join('\n');
+      // RAG: Retrieve relevant context snippets based on user query
+      const contextResults = vectorService.search(text, 3);
+      const retrievedContext = contextResults.map(r => 
+        `FILE: ${r.path}\nSUMMARY: ${r.snippet}\n(Score: ${r.score.toFixed(2)})`
+      ).join('\n\n');
+
       const currentCode = activeFile.result?.refactoredCode || activeFile.content;
 
       const { code, reply } = await chatRefinement(
@@ -439,7 +461,7 @@ function App() {
         currentCode, 
         newHistory, 
         text,
-        projectContext
+        retrievedContext
       );
 
       const aiMsg: ChatMessage = { role: 'ai', text: reply, timestamp: Date.now() };
@@ -501,10 +523,12 @@ function App() {
     let newContent = sourceFile.content;
     const escapedName = pkgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); 
     
+    // Naive replacement logic for different formats
     if (sourceFile.path.endsWith('.txt')) {
        const regex = new RegExp(`^${escapedName}([=<>!~]+.*)?$`, 'm');
        newContent = sourceFile.content.replace(regex, `${pkgName}==${newVersion}`);
     } else if (sourceFile.path.endsWith('.toml')) {
+       // Try Poetry/PyProject
        const regex = new RegExp(`^"?${escapedName}"?\\s*=\s*".*"`, 'm');
        if (regex.test(sourceFile.content)) {
          newContent = sourceFile.content.replace(regex, `${pkgName} = "${newVersion}"`);
@@ -603,8 +627,7 @@ function App() {
                                )}
                                <div className="flex flex-col min-w-0">
                                  <span className="text-xs font-bold text-slate-200 truncate">@{githubUser.login}</span>
-                                 <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                                 <span className="text-xs text-emerald-400 flex items-center gap-1">
                                    Connected
                                  </span>
                                </div>
@@ -620,10 +643,6 @@ function App() {
 
                           {/* Repo Search */}
                           <div>
-                            <label className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 block flex items-center justify-between">
-                              <span>Select Repository</span>
-                              <span className="text-slate-600 font-normal">{githubRepos.length} found</span>
-                            </label>
                             <div className="relative mb-2">
                                <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
                                <input 
@@ -656,9 +675,6 @@ function App() {
                                         )}
                                         <span className="truncate">{repo.name}</span>
                                       </div>
-                                      <span className="text-[10px] text-slate-500 flex-shrink-0 ml-2 bg-slate-800 px-1.5 py-0.5 rounded">
-                                        {repo.owner.login}
-                                      </span>
                                     </button>
                                   ))
                                )}
@@ -701,7 +717,6 @@ function App() {
                     onClick={() => createAndDownloadZip(files)}
                     disabled={files.length === 0}
                     className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
-                    title="Download Code as ZIP"
                  >
                     <Download className="w-3 h-3" /> ZIP
                  </button>
@@ -709,13 +724,12 @@ function App() {
                     onClick={() => generateMigrationReport(files)}
                     disabled={files.length === 0}
                     className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-md text-xs transition-colors disabled:opacity-50"
-                    title="Download Report as PDF"
                  >
                     <FileText className="w-3 h-3" /> PDF
                  </button>
                </div>
 
-               {sourceMode === 'github' && githubUser && (
+               {sourceMode === 'github' && githubUser && !hasPrBeenCreated && (
                   <button
                     onClick={handleCreatePR}
                     disabled={prStatus?.loading || isProjectAnalyzing || !selectedRepoFullName || filesChangedCount === 0}
@@ -727,12 +741,16 @@ function App() {
                )}
                
                {prStatus?.url && (
-                  <a href={prStatus.url} target="_blank" rel="noreferrer" className="block text-center text-[10px] text-emerald-400 hover:underline bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20">
-                    <span className="flex items-center justify-center gap-1">
-                      <Check className="w-3 h-3" /> PR Created Successfully
-                    </span>
-                  </a>
+                  <div className="animate-in fade-in zoom-in duration-300">
+                    <a href={prStatus.url} target="_blank" rel="noreferrer" className="block text-center text-[10px] text-emerald-400 hover:underline bg-emerald-500/10 p-2 rounded border border-emerald-500/20 mb-2">
+                      <span className="flex items-center justify-center gap-1 font-bold">
+                        <Check className="w-3 h-3" /> PR Created
+                      </span>
+                      <span className="opacity-75">Click to view on GitHub</span>
+                    </a>
+                  </div>
                )}
+               
                {prStatus?.error && (
                   <div className="text-[10px] text-red-400 text-center px-1 break-words bg-red-500/10 p-1.5 rounded border border-red-500/20">
                      Error: {prStatus.error}
@@ -742,7 +760,7 @@ function App() {
           </aside>
         </div>
 
-        {/* Sidebar Toggle Button (Visible when collapsed OR expanded for easy toggling) */}
+        {/* Sidebar Toggle Button */}
         <button
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
             className="absolute left-0 top-1/2 -translate-y-1/2 z-30 p-1 bg-slate-800 border border-slate-600 rounded-r-md text-slate-400 hover:text-white shadow-lg transform transition-transform hover:scale-110"
@@ -792,6 +810,13 @@ function App() {
                 </div>
 
                 <div className="flex items-center gap-3">
+                   {/* Indexing Indicator */}
+                   {isIndexing && (
+                      <div className="flex items-center gap-2 text-[10px] text-blue-400 bg-blue-500/10 px-2 py-1 rounded-full border border-blue-500/20">
+                         <Loader2 className="w-3 h-3 animate-spin" /> Indexing Codebase
+                      </div>
+                   )}
+
                   {/* Unit Test Button */}
                    {selectedFile?.language === 'python' && (
                       <button

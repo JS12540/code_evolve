@@ -71,7 +71,7 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
     const lowerPath = path.toLowerCase();
     const segments = lowerPath.split('/');
 
-    // Ignore Ignore Virtual Environments and Metadata
+    // Ignore Ignore Virtual Environments and Metadata (Strict)
     const isIgnored = segments.some((seg: string) => 
       seg === 'venv' || 
       seg === '.venv' || 
@@ -81,6 +81,9 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
       seg === '.vscode' || 
       seg === '__pycache__' ||
       seg === 'node_modules' ||
+      seg === 'dist' ||
+      seg === 'build' ||
+      seg === '.pytest_cache' ||
       seg.endsWith('.egg-info')
     );
 
@@ -106,36 +109,38 @@ export const fetchRepoContents = async (config: GitHubConfig): Promise<ProjectFi
       lowerPath.endsWith('.dockerfile') ||
       lowerPath.endsWith('.gitignore')
     );
-  }).slice(0, 150); // Increased limit slightly
+  }).slice(0, 150); // Limit files to prevent rate limits
 
   // 4. Fetch blobs in Parallel
-  const filePromises = validEntries.map(async (entry: any) => {
-    try {
-      const blobRes = await fetch(entry.url, { headers: getHeaders(config.token) });
-      if (!blobRes.ok) return null;
-      
-      const blobData = await blobRes.json();
-      // Decode content
-      const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
-      
-      return {
-        path: entry.path, // This path usually comes clean from GitHub "src/main.py"
-        content: content,
-        language: entry.path.endsWith('.py') ? 'python' : 'text',
-        status: 'pending'
-      } as ProjectFile;
-    } catch (e) {
-      console.warn(`Failed to process ${entry.path}`, e);
-      return {
-        path: entry.path,
-        content: "// Error reading file content.",
-        language: 'text',
-        status: 'error'
-      } as ProjectFile;
-    }
-  });
+  const BATCH_SIZE = 10;
+  const files: ProjectFile[] = [];
 
-  const files = (await Promise.all(filePromises)).filter((f): f is ProjectFile => f !== null);
+  for (let i = 0; i < validEntries.length; i += BATCH_SIZE) {
+    const batch = validEntries.slice(i, i + BATCH_SIZE);
+    const batchPromises = batch.map(async (entry: any) => {
+      try {
+        const blobRes = await fetch(entry.url, { headers: getHeaders(config.token) });
+        if (!blobRes.ok) return null;
+        
+        const blobData = await blobRes.json();
+        // Decode content
+        const content = decodeURIComponent(escape(atob(blobData.content.replace(/\n/g, ''))));
+        
+        return {
+          path: entry.path, 
+          content: content,
+          language: entry.path.endsWith('.py') ? 'python' : 'text',
+          status: 'pending'
+        } as ProjectFile;
+      } catch (e) {
+        console.warn(`Failed to process ${entry.path}`, e);
+        return null;
+      }
+    });
+    
+    const results = await Promise.all(batchPromises);
+    files.push(...results.filter((f): f is ProjectFile => f !== null));
+  }
 
   return files;
 };

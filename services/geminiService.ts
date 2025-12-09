@@ -81,7 +81,6 @@ export const analyzeCode = async (
          - Check for unused imports (F401), undefined names (F821), and standard linting errors.
          - Check if imports are sorted (isort style) and formatting follows Black.
          - CRITICAL: If the code ALREADY follows these standards, DO NOT generate a change entry. Only report 'LOW' severity 'STYLE' changes if you actually fix a specific violation.
-         - Do not report "Code looks good" as a change. Only reports deviations.
       
       OUTPUT FORMAT:
       Return a pure JSON object (no markdown formatting).
@@ -213,7 +212,7 @@ export const chatRefinement = async (
   currentCode: string,
   chatHistory: ChatMessage[],
   newMessage: string,
-  projectContext: string = ""
+  retrievedContext: string = ""
 ): Promise<{ code: string; reply: string }> => {
   if (!apiKey) throw new Error("API Key is missing.");
 
@@ -228,31 +227,34 @@ export const chatRefinement = async (
     You are an intelligent coding assistant helping a user refactor Python code in a larger project.
     
     CONTEXT:
-    - You have the 'Original Code' and the 'Current Refactored State'.
-    - You have a list of other files in the project ('Project Context'). Use this to infer imports or project structure if asked.
+    - You have the 'Original Code' and the 'Current Refactored State' of the active file.
+    - You have 'RETRIEVED CONTEXT' from the project (snippets from other relevant files based on the user's query).
     
     INSTRUCTIONS:
-    If the user asks to modify the code:
+    If the user asks to modify the current file:
     1. Apply the changes to the 'Current Code'.
     2. Return the FULL updated code in the JSON response.
     3. Provide a conversational reply explaining what you did.
 
-    If the user asks a question:
-    1. Return the 'Current Code' unchanged (or empty if no code provided).
-    2. Answer the question in the reply.
+    If the user asks a question about the project:
+    1. Use the 'RETRIEVED CONTEXT' to answer accurately.
+    2. Return the 'Current Code' unchanged.
+    3. Answer the question in the reply.
 
     OUTPUT FORMAT:
     JSON Object: { "code": "...", "reply": "..." }
   `;
 
   const prompt = `
-    PROJECT FILES:
-    ${projectContext}
+    RETRIEVED PROJECT CONTEXT (Semantic Search Results):
+    ${retrievedContext || '(No relevant context found)'}
 
-    ORIGINAL CODE:
+    ----------------
+
+    ACTIVE FILE ORIGINAL CODE:
     ${originalCode || '(No original code context)'}
 
-    CURRENT CODE:
+    ACTIVE FILE CURRENT CODE:
     ${currentCode || '(No current code context)'}
 
     USER REQUEST:
@@ -289,7 +291,6 @@ export const auditDependencyVersions = async (
 
   if (packages.length === 0) return [];
 
-  // Construct a prompt to check all packages at once
   const packageList = packages.map(p => `${p.name} (Current: ${p.currentVersion})`).join('\n');
 
   const prompt = `
@@ -319,7 +320,7 @@ export const auditDependencyVersions = async (
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         tools: [{ googleSearch: {} }],
-        temperature: 0.1 // strict parsing
+        temperature: 0.1 
       }
     });
 

@@ -65,7 +65,9 @@ const parseRequirementsTxt = (content: string): { name: string; version: string 
   const deps: { name: string; version: string }[] = [];
   content.split('\n').forEach(line => {
     const trimmed = line.split('#')[0].trim();
-    if (!trimmed) return;
+    if (!trimmed || trimmed.startsWith('-')) return; // Ignore flags like -e .
+    
+    // Handles: package==1.0, package>=1.0, package
     const match = trimmed.match(/^([a-zA-Z0-9_\-]+)((?:==|>=|<=|~=|>|<)[0-9a-zA-Z.]+(?:,[<>=!]+[0-9a-zA-Z.]+)*)?/);
     if (match) {
       deps.push({ name: match[1], version: match[2] || 'latest' });
@@ -77,26 +79,20 @@ const parseRequirementsTxt = (content: string): { name: string; version: string 
 const parsePyProjectToml = (content: string): { name: string; version: string }[] => {
   const deps: { name: string; version: string }[] = [];
   const lines = content.split('\n');
-  let inDependenciesSection = false;
+  let section = '';
 
-  // Simple parser: Looks for [project.dependencies], [tool.poetry.dependencies]
-  // Then looks for key = "value"
-  
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-       if (trimmed.includes('dependencies')) {
-         inDependenciesSection = true;
-       } else {
-         inDependenciesSection = false;
-       }
+       section = trimmed;
        continue;
     }
 
-    if (inDependenciesSection && trimmed) {
+    // Support standard [project.dependencies] AND [tool.poetry.dependencies]
+    if ((section === '[project.dependencies]' || section === '[tool.poetry.dependencies]') && trimmed) {
       // Match: package = "^1.0.0" or "package" = "1.0.0"
-      const match = trimmed.match(/^"?([a-zA-Z0-9_\-]+)"?\s*=\s*"?([0-9a-zA-Z.\^~<>=!]+)"?/);
-      if (match) {
+      const match = trimmed.match(/^"?([a-zA-Z0-9_\-]+)"?\s*=\s*"?([0-9a-zA-Z.\^~<>=!*]+)"?/);
+      if (match && match[1].toLowerCase() !== 'python') { // Ignore python version constraint
         deps.push({ name: match[1], version: match[2] });
       }
     }
@@ -108,7 +104,7 @@ const parseLockFile = (content: string): { name: string; version: string }[] => 
   const deps: { name: string; version: string }[] = [];
   const lines = content.split('\n');
   
-  // TOML-based locks (uv.lock, poetry.lock) usually have [[package]] blocks
+  // Generic TOML lock parser (uv.lock, poetry.lock)
   let currentPackage: { name?: string; version?: string } = {};
   
   for (const line of lines) {
@@ -126,7 +122,6 @@ const parseLockFile = (content: string): { name: string; version: string }[] => 
       if (match) currentPackage.version = match[1];
     }
   }
-  // push last
   if (currentPackage.name && currentPackage.version) {
     deps.push({ name: currentPackage.name, version: currentPackage.version });
   }
@@ -149,7 +144,7 @@ const parsePipfile = (content: string): { name: string; version: string }[] => {
     }
     
     if (inPackages && trimmed) {
-       const match = trimmed.match(/^([a-zA-Z0-9_\-]+)\s*=\s*"(.*)"/);
+       const match = trimmed.match(/^"?([a-zA-Z0-9_\-]+)"?\s*=\s*"(.*)"/);
        if (match) deps.push({ name: match[1], version: match[2] });
     }
   }
@@ -161,6 +156,10 @@ export const extractAllDependencies = (files: ProjectFile[]): { file: string, it
 
   files.forEach(f => {
     const lower = f.path.toLowerCase();
+    
+    // Ignore venv/cache files if they slipped through
+    if (lower.includes('venv/') || lower.includes('.venv/') || lower.includes('__pycache__')) return;
+
     if (lower.endsWith('requirements.txt')) {
       results.push({ file: f.path, items: parseRequirementsTxt(f.content) });
     } else if (lower.endsWith('pyproject.toml')) {
@@ -184,7 +183,9 @@ export const mapPackagesToFiles = (files: ProjectFile[], packages: string[]): Re
     const content = file.content;
     
     packages.forEach(pkg => {
+      // Very basic import detection
       const pkgNameSimple = pkg.toLowerCase().replace(/-/g, '_');
+      // Matches: "import pkg", "from pkg", "import pkg.sub"
       const regex = new RegExp(`^\\s*(import|from)\\s+${pkgNameSimple}\\b`, 'm');
       if (regex.test(content)) {
         mapping[pkg].push(file.path);
@@ -194,6 +195,3 @@ export const mapPackagesToFiles = (files: ProjectFile[], packages: string[]): Re
 
   return mapping;
 };
-
-// Re-export for compatibility if needed
-export const parseRequirements = parseRequirementsTxt;

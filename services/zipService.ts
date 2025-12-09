@@ -20,7 +20,7 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
       continue;
     }
 
-    // 2. Ignore Virtual Environments and Metadata
+    // 2. Strict Ignore for Virtual Environments and Metadata
     const isIgnored = segments.some(seg => 
       seg === 'venv' || 
       seg === '.venv' || 
@@ -32,6 +32,8 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
       seg === 'node_modules' ||
       seg === 'dist' ||
       seg === 'build' ||
+      seg === '.pytest_cache' ||
+      seg === '.mypy_cache' ||
       seg.endsWith('.egg-info')
     );
 
@@ -43,7 +45,9 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
                      path.endsWith('Pipfile') || 
                      path.endsWith('pyproject.toml') ||
                      path.endsWith('uv.lock') ||
-                     path.endsWith('poetry.lock');
+                     path.endsWith('poetry.lock') ||
+                     path.endsWith('Dockerfile') ||
+                     path.endsWith('docker-compose.yml');
                            
     const isText = isPython || isConfig || 
                    path.endsWith('.txt') || 
@@ -51,8 +55,7 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
                    path.endsWith('.json') || 
                    path.endsWith('.yaml') || 
                    path.endsWith('.yml') ||
-                   path.endsWith('.ini') ||
-                   path.endsWith('.dockerfile');
+                   path.endsWith('.ini');
 
     if (isText) {
       const content = await fileEntry.async('string');
@@ -69,7 +72,7 @@ export const extractZip = async (file: File): Promise<ProjectFile[]> => {
   return files.sort((a, b) => {
     const getScore = (f: ProjectFile) => {
       const p = f.path.toLowerCase();
-      if (p.includes('requirements.txt') || p.includes('pyproject.toml')) return 0;
+      if (p.includes('requirements') || p.includes('pyproject') || p.includes('lock')) return 0;
       if (p.endsWith('.py')) return 1;
       return 2;
     };
