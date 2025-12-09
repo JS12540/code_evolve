@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import Editor from './components/Editor';
@@ -790,222 +791,225 @@ function App() {
             {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
         </button>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 bg-background relative z-10 transition-all duration-300">
+        {/* Main Content Area Container */}
+        <div className="flex-1 flex overflow-hidden relative z-10 bg-background">
           
-          {selectedFilePath === PROJECT_ROOT_ID ? (
-             <ProjectDashboard 
-               files={files} 
-               isAnalyzing={isProjectAnalyzing}
-               onStopAnalysis={handleStopAnalysis}
-               onSelectFile={setSelectedFilePath}
-               dependencies={dependencies}
-               onCheckUpdates={handleCheckUpdates}
-               onUpgradeDependency={handleUpgradeDependency}
-               isCheckingUpdates={isCheckingUpdates}
-             />
-          ) : (
-            <>
-              {/* Toolbar */}
-              <div className="h-14 border-b border-slate-700 flex items-center justify-between px-6 bg-surface/30 backdrop-blur">
-                <div className="flex items-center gap-3">
-                  <button 
-                    onClick={() => setSelectedFilePath(PROJECT_ROOT_ID)}
-                    className="p-1.5 hover:bg-slate-800 rounded-md text-slate-400 hover:text-white transition-colors mr-1"
-                    title="Back to Dashboard"
-                  >
-                    <ArrowLeft className="w-4 h-4" />
-                  </button>
+          {/* Center Stage (Editor/Dashboard) */}
+          <div className="flex-1 flex flex-col min-w-0 transition-all duration-300">
+             {selectedFilePath === PROJECT_ROOT_ID ? (
+                <ProjectDashboard 
+                  files={files} 
+                  isAnalyzing={isProjectAnalyzing}
+                  onStopAnalysis={handleStopAnalysis}
+                  onSelectFile={setSelectedFilePath}
+                  dependencies={dependencies}
+                  onCheckUpdates={handleCheckUpdates}
+                  onUpgradeDependency={handleUpgradeDependency}
+                  isCheckingUpdates={isCheckingUpdates}
+                />
+             ) : (
+               <>
+                 {/* Toolbar */}
+                 <div className="h-14 border-b border-slate-700 flex items-center justify-between px-6 bg-surface/30 backdrop-blur">
+                   <div className="flex items-center gap-3">
+                     <button 
+                       onClick={() => setSelectedFilePath(PROJECT_ROOT_ID)}
+                       className="p-1.5 hover:bg-slate-800 rounded-md text-slate-400 hover:text-white transition-colors mr-1"
+                       title="Back to Dashboard"
+                     >
+                       <ArrowLeft className="w-4 h-4" />
+                     </button>
 
-                  <div className="p-1.5 bg-slate-800 rounded-md text-slate-400">
-                    <FolderOpen className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="font-mono text-sm text-slate-200 block max-w-[300px] truncate">{selectedFile?.path || 'No file selected'}</span>
-                    {selectedFile?.status === 'completed' && (
-                      <span className="text-[10px] text-emerald-500 flex items-center gap-1">
-                        <Check className="w-3 h-3" /> Analyzed
-                      </span>
-                    )}
-                  </div>
-                </div>
+                     <div className="p-1.5 bg-slate-800 rounded-md text-slate-400">
+                       <FolderOpen className="w-4 h-4" />
+                     </div>
+                     <div>
+                       <span className="font-mono text-sm text-slate-200 block max-w-[300px] truncate">{selectedFile?.path || 'No file selected'}</span>
+                       {selectedFile?.status === 'completed' && (
+                         <span className="text-[10px] text-emerald-500 flex items-center gap-1">
+                           <Check className="w-3 h-3" /> Analyzed
+                         </span>
+                       )}
+                     </div>
+                   </div>
 
-                <div className="flex items-center gap-3">
-                   {/* Indexing Indicator */}
-                   {isIndexing && (
-                      <div className="flex items-center gap-2 text-[10px] text-blue-400 bg-blue-500/10 px-2 py-1 rounded-full border border-blue-500/20">
-                         <Loader2 className="w-3 h-3 animate-spin" /> Indexing Codebase
-                      </div>
-                   )}
+                   <div className="flex items-center gap-3">
+                      {/* Indexing Indicator */}
+                      {isIndexing && (
+                         <div className="flex items-center gap-2 text-[10px] text-blue-400 bg-blue-500/10 px-2 py-1 rounded-full border border-blue-500/20">
+                            <Loader2 className="w-3 h-3 animate-spin" /> Indexing Codebase
+                         </div>
+                      )}
 
-                  {/* Unit Test Button */}
-                   {selectedFile?.language === 'python' && (
-                      <button
-                        onClick={handleGenerateTests}
-                        disabled={isGeneratingTests || isProjectAnalyzing}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium border border-slate-600 transition-all disabled:opacity-50"
-                        title="Generate pytest unit tests"
-                      >
-                         {isGeneratingTests ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TestTube2 className="w-3.5 h-3.5" />}
-                         Generate Tests
-                      </button>
-                   )}
+                     {/* Unit Test Button */}
+                      {selectedFile?.language === 'python' && (
+                         <button
+                           onClick={handleGenerateTests}
+                           disabled={isGeneratingTests || isProjectAnalyzing}
+                           className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium border border-slate-600 transition-all disabled:opacity-50"
+                           title="Generate pytest unit tests"
+                         >
+                            {isGeneratingTests ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TestTube2 className="w-3.5 h-3.5" />}
+                            Generate Tests
+                         </button>
+                      )}
 
-                  <div className="h-6 w-px bg-slate-700 mx-1" />
+                     <div className="h-6 w-px bg-slate-700 mx-1" />
 
-                  <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
-                    <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Target</span>
-                    <select 
-                      value={targetVersion}
-                      onChange={(e) => setTargetVersion(e.target.value as TargetVersion)}
-                      className="bg-transparent border-none text-slate-200 text-xs focus:ring-0 cursor-pointer py-1"
-                    >
-                      {Object.values(TargetVersion).map((v) => (
-                        <option key={v} value={v} className="bg-slate-800">{v}</option>
-                      ))}
-                    </select>
-                  </div>
+                     <div className="flex items-center gap-2 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
+                       <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Target</span>
+                       <select 
+                         value={targetVersion}
+                         onChange={(e) => setTargetVersion(e.target.value as TargetVersion)}
+                         className="bg-transparent border-none text-slate-200 text-xs focus:ring-0 cursor-pointer py-1"
+                       >
+                         {Object.values(TargetVersion).map((v) => (
+                           <option key={v} value={v} className="bg-slate-800">{v}</option>
+                         ))}
+                       </select>
+                     </div>
 
-                  <button
-                    onClick={handleManualAnalyze}
-                    disabled={isProjectAnalyzing || !selectedFile}
-                    className="flex items-center gap-2 px-4 py-1.5 bg-primary hover:bg-blue-600 text-white rounded-md text-xs font-semibold transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
-                  >
-                    {selectedFile?.status === 'analyzing' ? 'Analyzing...' : 'Run Analysis'}
-                  </button>
-                </div>
-              </div>
+                     <button
+                       onClick={handleManualAnalyze}
+                       disabled={isProjectAnalyzing || !selectedFile}
+                       className="flex items-center gap-2 px-4 py-1.5 bg-primary hover:bg-blue-600 text-white rounded-md text-xs font-semibold transition-all shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
+                     >
+                       {selectedFile?.status === 'analyzing' ? 'Analyzing...' : 'Run Analysis'}
+                     </button>
+                   </div>
+                 </div>
 
-              {/* Error Banner */}
-              {globalError && (
-                <div className="bg-red-500/10 border-b border-red-500/20 text-red-400 p-2 px-6 flex items-center gap-2 text-xs">
-                  <AlertCircle className="w-4 h-4" />
-                  {globalError}
-                </div>
-              )}
+                 {/* Error Banner */}
+                 {globalError && (
+                   <div className="bg-red-500/10 border-b border-red-500/20 text-red-400 p-2 px-6 flex items-center gap-2 text-xs">
+                     <AlertCircle className="w-4 h-4" />
+                     {globalError}
+                   </div>
+                 )}
 
-              {/* Editor & Results Split */}
-              <div className="flex-1 flex min-h-0 relative">
-                {/* Left/Main Column: Editors */}
-                <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                  <div className="flex-1 flex min-h-0">
-                    {/* Left Column: Original Code (Hidden if diff mode, or shown as source) */}
-                    <div className={`flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden ${activeTab === 'diff' ? 'hidden' : 'flex-1'}`}>
-                        <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
-                          <Editor 
-                            label="Current File Content" 
-                            code={selectedFile?.content || ''} 
-                            onChange={(val) => {
-                              setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
-                            }}
-                            readOnly={false}
-                          />
-                        </div>
-                    </div>
+                 {/* Editor & Results Split */}
+                 <div className="flex-1 flex min-h-0 relative">
+                   {/* Left/Main Column: Editors */}
+                   <div className="flex-1 flex flex-col min-h-0 min-w-0">
+                     <div className="flex-1 flex min-h-0">
+                       {/* Left Column: Original Code (Hidden if diff mode, or shown as source) */}
+                       <div className={`flex flex-col min-w-[300px] border-r border-slate-700/50 overflow-hidden ${activeTab === 'diff' ? 'hidden' : 'flex-1'}`}>
+                           <div className="flex-1 p-4 pb-0 overflow-hidden h-full">
+                             <Editor 
+                               label="Current File Content" 
+                               code={selectedFile?.content || ''} 
+                               onChange={(val) => {
+                                 setFiles(prev => prev.map(f => f.path === selectedFile?.path ? { ...f, content: val, status: 'pending' } : f));
+                               }}
+                               readOnly={false}
+                             />
+                           </div>
+                       </div>
 
-                    {/* Right Column: Results (Tabs) */}
-                    <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20 overflow-hidden">
-                        {selectedFile?.result ? (
-                          <>
-                            {/* Tabs */}
-                            <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1 flex-shrink-0">
-                              <button 
-                                onClick={() => setActiveTab('report')}
-                                className={`
-                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                                  ${activeTab === 'report' 
-                                    ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
-                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                                  }
-                                `}
-                              >
-                                <BarChart3 className="w-3.5 h-3.5" />
-                                Report
-                              </button>
-                              <button 
-                                onClick={() => setActiveTab('code')}
-                                className={`
-                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                                  ${activeTab === 'code' 
-                                    ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
-                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                                  }
-                                `}
-                              >
-                                <Code2 className="w-3.5 h-3.5" />
-                                Refactored
-                              </button>
-                              <button 
-                                onClick={() => setActiveTab('diff')}
-                                className={`
-                                  flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
-                                  ${activeTab === 'diff' 
-                                    ? 'bg-surface border-slate-700 text-amber-400 border-b-surface mb-[-1px] z-10' 
-                                    : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
-                                  }
-                                `}
-                              >
-                                <GitCompare className="w-3.5 h-3.5" />
-                                Diff
-                              </button>
-                            </div>
+                       {/* Right Column: Results (Tabs) */}
+                       <div className="flex-1 flex flex-col min-w-[300px] bg-slate-900/20 overflow-hidden">
+                           {selectedFile?.result ? (
+                             <>
+                               {/* Tabs */}
+                               <div className="flex items-center border-b border-slate-700 px-4 pt-2 gap-1 flex-shrink-0">
+                                 <button 
+                                   onClick={() => setActiveTab('report')}
+                                   className={`
+                                     flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                     ${activeTab === 'report' 
+                                       ? 'bg-surface border-slate-700 text-primary border-b-surface mb-[-1px] z-10' 
+                                       : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                     }
+                                   `}
+                                 >
+                                   <BarChart3 className="w-3.5 h-3.5" />
+                                   Report
+                                 </button>
+                                 <button 
+                                   onClick={() => setActiveTab('code')}
+                                   className={`
+                                     flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                     ${activeTab === 'code' 
+                                       ? 'bg-surface border-slate-700 text-emerald-400 border-b-surface mb-[-1px] z-10' 
+                                       : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                     }
+                                   `}
+                                 >
+                                   <Code2 className="w-3.5 h-3.5" />
+                                   Refactored
+                                 </button>
+                                 <button 
+                                   onClick={() => setActiveTab('diff')}
+                                   className={`
+                                     flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-t-lg transition-colors border-t border-x
+                                     ${activeTab === 'diff' 
+                                       ? 'bg-surface border-slate-700 text-amber-400 border-b-surface mb-[-1px] z-10' 
+                                       : 'bg-transparent border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'
+                                     }
+                                   `}
+                                 >
+                                   <GitCompare className="w-3.5 h-3.5" />
+                                   Diff
+                                 </button>
+                               </div>
 
-                            {/* Tab Content */}
-                            <div className="flex-1 min-h-0 p-4 relative bg-surface/30 overflow-hidden">
-                              {activeTab === 'code' && (
-                                <Editor 
-                                  label="AI Refactored Result" 
-                                  code={selectedFile.result.refactoredCode} 
-                                  readOnly={true} 
-                                  className="h-full shadow-xl"
-                                />
-                              )}
-                              {activeTab === 'report' && (
-                                <ChangeLog 
-                                  changes={selectedFile.result.changes} 
-                                  summary={selectedFile.result.summary} 
-                                  references={selectedFile.result.references}
-                                />
-                              )}
-                              {activeTab === 'diff' && (
-                                <div className="h-full bg-[#0a0f1e] rounded-xl border border-slate-700 overflow-hidden">
-                                  <DiffViewer original={selectedFile.content} modified={selectedFile.result.refactoredCode} />
-                                </div>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
-                              <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
-                                {isProjectAnalyzing ? (
-                                  <>
-                                    <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
-                                    <Loader2 className="w-8 h-8 text-primary" />
-                                  </>
-                                ) : (
-                                  <FileCode className="w-8 h-8 opacity-50" />
-                                )}
-                              </div>
-                              <h3 className="text-lg font-medium text-slate-200 mb-2">
-                                {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
-                              </h3>
-                              <p className="text-sm max-w-sm leading-relaxed text-slate-400">
-                                {isProjectAnalyzing 
-                                  ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
-                                  : 'Select a file to view detailed changes.'}
-                              </p>
-                          </div>
-                        )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
+                               {/* Tab Content */}
+                               <div className="flex-1 min-h-0 p-4 relative bg-surface/30 overflow-hidden">
+                                 {activeTab === 'code' && (
+                                   <Editor 
+                                     label="AI Refactored Result" 
+                                     code={selectedFile.result.refactoredCode} 
+                                     readOnly={true} 
+                                     className="h-full shadow-xl"
+                                   />
+                                 )}
+                                 {activeTab === 'report' && (
+                                   <ChangeLog 
+                                     changes={selectedFile.result.changes} 
+                                     summary={selectedFile.result.summary} 
+                                     references={selectedFile.result.references}
+                                   />
+                                 )}
+                                 {activeTab === 'diff' && (
+                                   <div className="h-full bg-[#0a0f1e] rounded-xl border border-slate-700 overflow-hidden">
+                                     <DiffViewer original={selectedFile.content} modified={selectedFile.result.refactoredCode} />
+                                   </div>
+                                 )}
+                               </div>
+                             </>
+                           ) : (
+                             <div className="flex-1 flex flex-col items-center justify-center text-slate-500 p-8 text-center">
+                                 <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center mb-6 relative">
+                                   {isProjectAnalyzing ? (
+                                     <>
+                                       <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin"></div>
+                                       <Loader2 className="w-8 h-8 text-primary" />
+                                     </>
+                                   ) : (
+                                     <FileCode className="w-8 h-8 opacity-50" />
+                                   )}
+                                 </div>
+                                 <h3 className="text-lg font-medium text-slate-200 mb-2">
+                                   {isProjectAnalyzing ? 'Analyzing Codebase...' : 'Ready to Analyze'}
+                                 </h3>
+                                 <p className="text-sm max-w-sm leading-relaxed text-slate-400">
+                                   {isProjectAnalyzing 
+                                     ? 'Our AI agents are scanning PyPI for updates, checking vulnerabilities, and refactoring your code.' 
+                                     : 'Select a file to view detailed changes.'}
+                                 </p>
+                             </div>
+                           )}
+                       </div>
+                     </div>
+                   </div>
+                 </div>
+               </>
+             )}
+          </div>
 
-          {/* Global Chat Overlay/Split - Rendered LAST to be on top of everything if needed */}
+          {/* Chat Panel - Side by Side Split View */}
           {isChatOpen && (
-             <div className="absolute right-0 top-0 bottom-0 w-96 bg-surface border-l border-slate-700 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-300">
+             <div className="w-[400px] border-l border-slate-700 bg-surface flex flex-col flex-shrink-0 shadow-2xl z-20 transition-all duration-300 ease-in-out">
                 <ChatPanel 
                   messages={globalChatHistory} 
                   onSendMessage={handleChatMessage} 
@@ -1014,6 +1018,7 @@ function App() {
                 />
              </div>
           )}
+
         </div>
       </main>
     </div>
