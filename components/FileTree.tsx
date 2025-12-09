@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { ProjectFile } from '../types';
 import { 
@@ -166,8 +165,8 @@ const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, selectedPath, 
   const treeData = useMemo(() => buildTree(files), [files]);
 
   return (
-    <div className="flex flex-col h-full bg-surface/50">
-      <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between sticky top-0 bg-surface/95 backdrop-blur z-10">
+    <div className="flex flex-col h-full bg-surface/50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between sticky top-0 bg-surface/95 backdrop-blur z-10 flex-shrink-0">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
           <Folder className="w-3.5 h-3.5" /> 
           Project Files
@@ -175,8 +174,8 @@ const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, selectedPath, 
         <span className="text-[10px] bg-slate-800 text-slate-500 px-1.5 py-0.5 rounded-full">{files.length}</span>
       </div>
 
-      {/* Fixed Dashboard Link - Moved out of scroll area */}
-      <div className="px-2 pt-2 pb-1">
+      {/* Fixed Dashboard Link */}
+      <div className="px-2 pt-2 pb-1 flex-shrink-0">
         <button
           onClick={() => onSelect('__PROJECT_ROOT__')}
           className={`
@@ -189,7 +188,7 @@ const FileTree: React.FC<FileTreeProps> = ({ files, selectedFile, selectedPath, 
         </button>
       </div>
       
-      <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar min-h-0">
         {files.length === 0 ? (
           <div className="text-center py-10 px-4">
              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-3">

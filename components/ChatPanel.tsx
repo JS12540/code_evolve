@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useLayoutEffect } from 'react';
 import { ChatMessage } from '../types';
 import { Send, Bot, User, X } from 'lucide-react';
 
@@ -14,12 +14,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isLoadin
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, isLoading]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

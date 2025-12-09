@@ -35,7 +35,10 @@ import {
   TestTube2,
   GitCompare,
   PanelLeftClose,
-  PanelLeftOpen
+  PanelLeftOpen,
+  ChevronDown,
+  ChevronUp,
+  Settings2
 } from 'lucide-react';
 
 const INITIAL_CODE_EXAMPLE = `# Legacy Python Example
@@ -77,7 +80,11 @@ function App() {
   const [isProjectAnalyzing, setIsProjectAnalyzing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isConfigExpanded, setIsConfigExpanded] = useState(true); // Control for Upload/GitHub section
   
+  // Global Chat State
+  const [globalChatHistory, setGlobalChatHistory] = useState<ChatMessage[]>([]);
+
   // Analysis Abort Controller
   const abortControllerRef = useRef<AbortController | null>(null);
   
@@ -178,6 +185,8 @@ function App() {
         }
         setFiles(extractedFiles);
         setSelectedFilePath(PROJECT_ROOT_ID);
+        // Collapse config sidebar to show file tree
+        setIsConfigExpanded(false);
       } else {
         const content = await file.text();
         extractedFiles = [{
@@ -204,6 +213,7 @@ function App() {
     setGlobalError(null);
     setPrStatus(null);
     setHasPrBeenCreated(false);
+    setGlobalChatHistory([]); // Clear chat on new project
   };
 
   const handleGithubLogin = async (token: string, user: GitHubUser) => {
@@ -248,7 +258,9 @@ function App() {
         setGlobalError("No supported files found in the repository (or empty).");
       } else {
         setFiles(fetchedFiles);
-        setSelectedFilePath(PROJECT_ROOT_ID); 
+        setSelectedFilePath(PROJECT_ROOT_ID);
+        // Collapse config sidebar to show file tree
+        setIsConfigExpanded(false);
         await runBatchAnalysis(fetchedFiles);
       }
     } catch (err: any) {
@@ -274,7 +286,7 @@ function App() {
         repo
       }, files);
       setPrStatus({ loading: false, url: result.url });
-      setHasPrBeenCreated(true); // Disable/Hide button logic
+      setHasPrBeenCreated(true);
     } catch (err: any) {
       setPrStatus({ loading: false, error: err.message });
     }
@@ -296,7 +308,6 @@ function App() {
   };
 
   const runBatchAnalysis = async (filesToProcess: ProjectFile[]) => {
-    // Abort any existing process
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
     }
@@ -338,7 +349,7 @@ function App() {
        }
     }
 
-    // REDUCED CONCURRENCY to avoid Rate Limits
+    // CONCURRENCY LIMIT to avoid Rate Limits
     const CONCURRENCY_LIMIT = 2;
     const queue = [...filesToAnalyze];
     
@@ -433,19 +444,15 @@ function App() {
   };
 
   const handleChatMessage = async (text: string) => {
-    const activeFile = selectedFile || files[0]; // fallback
-    if (!activeFile) return;
+    const activeFile = selectedFile || files[0]; 
+    const currentCodeContext = activeFile ? (activeFile.result?.refactoredCode || activeFile.content) : '';
 
     setIsChatLoading(true);
     
-    const newHistory: ChatMessage[] = [
-      ...(activeFile.chatHistory || []),
-      { role: 'user', text, timestamp: Date.now() }
-    ];
-
-    setFiles(prev => prev.map(f => 
-      f.path === activeFile.path ? { ...f, chatHistory: newHistory } : f
-    ));
+    // Update Global History immediately
+    const userMsg: ChatMessage = { role: 'user', text, timestamp: Date.now() };
+    const historyWithUser = [...globalChatHistory, userMsg];
+    setGlobalChatHistory(historyWithUser);
 
     try {
       // RAG: Retrieve relevant context snippets based on user query
@@ -454,38 +461,37 @@ function App() {
         `FILE: ${r.path}\nSUMMARY: ${r.snippet}\n(Score: ${r.score.toFixed(2)})`
       ).join('\n\n');
 
-      const currentCode = activeFile.result?.refactoredCode || activeFile.content;
-
       const { code, reply } = await chatRefinement(
-        activeFile.content, 
-        currentCode, 
-        newHistory, 
+        activeFile?.content || '', 
+        currentCodeContext, 
+        historyWithUser, 
         text,
         retrievedContext
       );
 
       const aiMsg: ChatMessage = { role: 'ai', text: reply, timestamp: Date.now() };
-      const updatedHistory = [...newHistory, aiMsg];
-
-      setFiles(prev => prev.map(f => 
-        f.path === activeFile.path ? { 
-          ...f, 
-          chatHistory: updatedHistory,
-          result: { 
-             ...f.result!, 
-             refactoredCode: code || f.result?.refactoredCode || f.content,
-             changes: f.result?.changes || [],
-             summary: f.result?.summary || 'Updated via Chat'
-          }
-        } : f
-      ));
+      setGlobalChatHistory(prev => [...prev, aiMsg]);
       
-      if (code && code !== currentCode) {
+      if (activeFile && code && code !== currentCodeContext) {
+         setFiles(prev => prev.map(f => 
+          f.path === activeFile.path ? { 
+            ...f, 
+            result: { 
+               ...f.result!, 
+               refactoredCode: code,
+               changes: f.result?.changes || [],
+               summary: f.result?.summary || 'Updated via Chat'
+            }
+          } : f
+        ));
+
          if (selectedFilePath !== activeFile.path) setSelectedFilePath(activeFile.path);
          setActiveTab('code'); 
       }
     } catch (err: any) {
       setGlobalError("Chat Error: " + err.message);
+      // Remove failed message or add error message to chat
+      setGlobalChatHistory(prev => [...prev, { role: 'ai', text: "Error processing request.", timestamp: Date.now() }]);
     } finally {
       setIsChatLoading(false);
     }
@@ -579,119 +585,134 @@ function App() {
         `}>
           {/* Sidebar Content */}
           <aside className="w-80 flex flex-col h-full">
-            {/* Source Toggle */}
-            <div className="p-4 border-b border-slate-700 bg-slate-900/30">
-               <div className="flex bg-slate-800 p-1 rounded-lg mb-4">
-                  <button 
-                    onClick={() => setSourceMode('upload')}
-                    className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'upload' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    Upload ZIP
-                  </button>
-                  <button 
-                    onClick={() => setSourceMode('github')}
-                    className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'github' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    GitHub
-                  </button>
-               </div>
+            {/* Configuration / Source Section */}
+            <div className="border-b border-slate-700 bg-slate-900/30">
+               <button 
+                 onClick={() => setIsConfigExpanded(!isConfigExpanded)}
+                 className="w-full flex items-center justify-between p-3 text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-colors"
+               >
+                 <div className="flex items-center gap-2">
+                   <Settings2 className="w-3.5 h-3.5" />
+                   Project Source
+                 </div>
+                 {isConfigExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+               </button>
 
-               {sourceMode === 'upload' ? (
-                  <div className="relative group">
-                    <input 
-                      type="file" 
-                      accept=".zip,.py,.txt,.md" 
-                      onChange={handleFileUpload} 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    />
-                    <button className="w-full flex items-center justify-center gap-2 px-4 py-8 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-700 hover:border-slate-500 rounded-lg text-sm transition-all group-hover:text-white">
-                      <Upload className="w-5 h-5 mb-1" />
-                      <span className="text-xs">Click to Upload ZIP</span>
-                    </button>
-                  </div>
-               ) : (
-                  <div className="space-y-3">
-                     {!githubUser ? (
-                       <GitHubAuth onLogin={handleGithubLogin} isLoading={isGithubLoading} />
-                     ) : (
-                       <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
-                          {/* User Profile Card */}
-                          <div className="flex items-center justify-between bg-slate-800/50 p-2.5 rounded-lg border border-slate-700">
-                            <div className="flex items-center gap-2.5 overflow-hidden">
-                               {githubUser.avatar_url ? (
-                                 <img src={githubUser.avatar_url} alt="Profile" className="w-8 h-8 rounded-full border border-slate-600" />
-                               ) : (
-                                 <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                                   <span className="text-xs font-bold text-primary">{githubUser.login.substring(0, 2).toUpperCase()}</span>
-                                 </div>
-                               )}
-                               <div className="flex flex-col min-w-0">
-                                 <span className="text-xs font-bold text-slate-200 truncate">@{githubUser.login}</span>
-                                 <span className="text-xs text-emerald-400 flex items-center gap-1">
-                                   Connected
-                                 </span>
-                               </div>
-                            </div>
-                            <button 
-                              onClick={handleDisconnectGithub} 
-                              className="text-slate-500 hover:text-red-400 p-1.5 hover:bg-slate-700 rounded transition-colors" 
-                              title="Disconnect Account"
-                            >
-                              <LogOut className="w-4 h-4" />
-                            </button>
-                          </div>
+               {isConfigExpanded && (
+                 <div className="p-4 pt-0 animate-in slide-in-from-top-2">
+                   <div className="flex bg-slate-800 p-1 rounded-lg mb-4 mt-2">
+                      <button 
+                        onClick={() => setSourceMode('upload')}
+                        className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'upload' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                      >
+                        Upload ZIP
+                      </button>
+                      <button 
+                        onClick={() => setSourceMode('github')}
+                        className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${sourceMode === 'github' ? 'bg-primary text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                      >
+                        GitHub
+                      </button>
+                   </div>
 
-                          {/* Repo Search */}
-                          <div>
-                            <div className="relative mb-2">
-                               <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
-                               <input 
-                                  type="text"
-                                  placeholder="Search repositories..."
-                                  value={repoSearch}
-                                  onChange={e => setRepoSearch(e.target.value)}
-                                  className="w-full bg-slate-800 border border-slate-700 rounded-md pl-8 pr-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none placeholder-slate-600 text-slate-200"
-                               />
-                            </div>
-                            
-                            {/* Repo List */}
-                            <div className="h-48 overflow-y-auto border border-slate-700 rounded-md bg-slate-900/20 custom-scrollbar">
-                               {filteredRepos.length === 0 ? (
-                                  <div className="flex flex-col items-center justify-center h-full p-4 text-center text-[10px] text-slate-500">
-                                     {isGithubLoading ? <Loader2 className="w-5 h-5 animate-spin mb-2" /> : "No repositories found."}
-                                  </div>
-                               ) : (
-                                  filteredRepos.map(repo => (
-                                    <button
-                                      key={repo.id}
-                                      onClick={() => setSelectedRepoFullName(repo.full_name)}
-                                      className={`w-full text-left px-3 py-2.5 text-xs border-b border-slate-700/30 last:border-0 hover:bg-slate-700/50 transition-colors flex items-center justify-between group ${selectedRepoFullName === repo.full_name ? 'bg-primary/20 text-white' : 'text-slate-300'}`}
-                                    >
-                                      <div className="flex items-center gap-2 truncate">
-                                        {repo.private ? (
-                                          <Lock className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-amber-400' : 'text-slate-500 group-hover:text-amber-400'}`} />
-                                        ) : (
-                                          <Globe className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-primary' : 'text-slate-500 group-hover:text-primary'}`} />
-                                        )}
-                                        <span className="truncate">{repo.name}</span>
+                   {sourceMode === 'upload' ? (
+                      <div className="relative group">
+                        <input 
+                          type="file" 
+                          accept=".zip,.py,.txt,.md" 
+                          onChange={handleFileUpload} 
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        />
+                        <button className="w-full flex items-center justify-center gap-2 px-4 py-8 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-700 hover:border-slate-500 rounded-lg text-sm transition-all group-hover:text-white">
+                          <Upload className="w-5 h-5 mb-1" />
+                          <span className="text-xs">Click to Upload ZIP</span>
+                        </button>
+                      </div>
+                   ) : (
+                      <div className="space-y-3">
+                         {!githubUser ? (
+                           <GitHubAuth onLogin={handleGithubLogin} isLoading={isGithubLoading} />
+                         ) : (
+                           <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
+                              {/* User Profile Card */}
+                              <div className="flex items-center justify-between bg-slate-800/50 p-2.5 rounded-lg border border-slate-700">
+                                <div className="flex items-center gap-2.5 overflow-hidden">
+                                   {githubUser.avatar_url ? (
+                                     <img src={githubUser.avatar_url} alt="Profile" className="w-8 h-8 rounded-full border border-slate-600" />
+                                   ) : (
+                                     <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                                       <span className="text-xs font-bold text-primary">{githubUser.login.substring(0, 2).toUpperCase()}</span>
+                                     </div>
+                                   )}
+                                   <div className="flex flex-col min-w-0">
+                                     <span className="text-xs font-bold text-slate-200 truncate">@{githubUser.login}</span>
+                                     <span className="text-xs text-emerald-400 flex items-center gap-1">
+                                       Connected
+                                     </span>
+                                   </div>
+                                </div>
+                                <button 
+                                  onClick={handleDisconnectGithub} 
+                                  className="text-slate-500 hover:text-red-400 p-1.5 hover:bg-slate-700 rounded transition-colors" 
+                                  title="Disconnect Account"
+                                >
+                                  <LogOut className="w-4 h-4" />
+                                </button>
+                              </div>
+
+                              {/* Repo Search */}
+                              <div>
+                                <div className="relative mb-2">
+                                   <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
+                                   <input 
+                                      type="text"
+                                      placeholder="Search repositories..."
+                                      value={repoSearch}
+                                      onChange={e => setRepoSearch(e.target.value)}
+                                      className="w-full bg-slate-800 border border-slate-700 rounded-md pl-8 pr-3 py-2 text-xs focus:ring-1 focus:ring-primary focus:outline-none placeholder-slate-600 text-slate-200"
+                                   />
+                                </div>
+                                
+                                {/* Repo List */}
+                                <div className="h-48 overflow-y-auto border border-slate-700 rounded-md bg-slate-900/20 custom-scrollbar">
+                                   {filteredRepos.length === 0 ? (
+                                      <div className="flex flex-col items-center justify-center h-full p-4 text-center text-[10px] text-slate-500">
+                                         {isGithubLoading ? <Loader2 className="w-5 h-5 animate-spin mb-2" /> : "No repositories found."}
                                       </div>
-                                    </button>
-                                  ))
-                               )}
-                            </div>
-                          </div>
+                                   ) : (
+                                      filteredRepos.map(repo => (
+                                        <button
+                                          key={repo.id}
+                                          onClick={() => setSelectedRepoFullName(repo.full_name)}
+                                          className={`w-full text-left px-3 py-2.5 text-xs border-b border-slate-700/30 last:border-0 hover:bg-slate-700/50 transition-colors flex items-center justify-between group ${selectedRepoFullName === repo.full_name ? 'bg-primary/20 text-white' : 'text-slate-300'}`}
+                                        >
+                                          <div className="flex items-center gap-2 truncate">
+                                            {repo.private ? (
+                                              <Lock className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-amber-400' : 'text-slate-500 group-hover:text-amber-400'}`} />
+                                            ) : (
+                                              <Globe className={`w-3.5 h-3.5 ${selectedRepoFullName === repo.full_name ? 'text-primary' : 'text-slate-500 group-hover:text-primary'}`} />
+                                            )}
+                                            <span className="truncate">{repo.name}</span>
+                                          </div>
+                                        </button>
+                                      ))
+                                   )}
+                                </div>
+                              </div>
 
-                          <button 
-                              onClick={handleImportRepo}
-                              disabled={!selectedRepoFullName || isGithubLoading}
-                              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
-                          >
-                              {isGithubLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                              Import Project
-                          </button>
-                       </div>
-                     )}
-                  </div>
+                              <button 
+                                  onClick={handleImportRepo}
+                                  disabled={!selectedRepoFullName || isGithubLoading}
+                                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20"
+                              >
+                                  {isGithubLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                  Import Project
+                              </button>
+                           </div>
+                         )}
+                      </div>
+                   )}
+                 </div>
                )}
             </div>
             
@@ -986,7 +1007,7 @@ function App() {
           {isChatOpen && (
              <div className="absolute right-0 top-0 bottom-0 w-96 bg-surface border-l border-slate-700 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-300">
                 <ChatPanel 
-                  messages={selectedFile?.chatHistory || []} 
+                  messages={globalChatHistory} 
                   onSendMessage={handleChatMessage} 
                   isLoading={isChatLoading}
                   onClose={() => setIsChatOpen(false)}
